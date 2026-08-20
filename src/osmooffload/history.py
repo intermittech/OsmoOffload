@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS transfers (
     size INTEGER NOT NULL,
     storage TEXT,
     hash TEXT,
+    dest_name TEXT,
     dest_path TEXT NOT NULL,
     started_at REAL NOT NULL,
     finished_at REAL,
@@ -51,9 +52,10 @@ class TransferRow:
     id: int
     camera_id: str
     media_path: str
-    name: str
+    name: str  # original camera-side filename
     kind: str
     size: int
+    dest_name: str | None  # what it was renamed to on disk
     dest_path: str
     status: str
     verified: bool
@@ -71,6 +73,11 @@ class HistoryDB:
         with self._lock:
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.executescript(SCHEMA)
+            # migration for DBs created before dest_name existed
+            try:
+                self._db.execute("ALTER TABLE transfers ADD COLUMN dest_name TEXT")
+            except sqlite3.OperationalError:
+                pass  # column already there
             self._db.commit()
 
     def close(self) -> None:
@@ -106,11 +113,13 @@ class HistoryDB:
     def start_transfer(
         self, session_id: int, camera_id: str, media_path: str, name: str,
         kind: str, size: int, storage: str | None, dest_path: str,
+        dest_name: str | None = None,
     ) -> int:
         cur = self._db.execute(
             "INSERT INTO transfers(session_id, camera_id, media_path, name, kind, size, "
-            "storage, dest_path, started_at) VALUES(?,?,?,?,?,?,?,?,?)",
-            (session_id, camera_id, media_path, name, kind, size, storage, dest_path, time.time()),
+            "storage, dest_name, dest_path, started_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (session_id, camera_id, media_path, name, kind, size, storage,
+             dest_name, dest_path, time.time()),
         )
         self._db.commit()
         return cur.lastrowid
@@ -141,8 +150,8 @@ class HistoryDB:
 
     def recent(self, limit: int = 200, camera_id: str | None = None) -> list[TransferRow]:
         q = (
-            "SELECT id, camera_id, media_path, name, kind, size, dest_path, status, "
-            "verified, finished_at FROM transfers "
+            "SELECT id, camera_id, media_path, name, kind, size, dest_name, dest_path, "
+            "status, verified, finished_at FROM transfers "
         )
         args: tuple = ()
         if camera_id:
@@ -150,4 +159,7 @@ class HistoryDB:
             args = (camera_id,)
         q += "ORDER BY started_at DESC LIMIT ?"
         rows = self._db.execute(q, args + (limit,)).fetchall()
-        return [TransferRow(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], bool(r[8]), r[9]) for r in rows]
+        return [
+            TransferRow(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], bool(r[9]), r[10])
+            for r in rows
+        ]

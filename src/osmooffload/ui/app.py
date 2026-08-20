@@ -1,20 +1,20 @@
-"""App bootstrap: theme, tray icon, window/tray mode, mock data mode."""
+"""App bootstrap: theme, tray, controller wiring, toasts, mock mode."""
 
 from __future__ import annotations
 
 import sys
+import time
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from .. import config
 from . import theme
-from .main_window import MainWindow
+from .main_window import MainWindow, human_size
 
 
 def make_icon() -> QIcon:
-    """Programmatic app icon: accent ring on dark — replaced by real art later."""
     pm = QPixmap(64, 64)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
@@ -23,11 +23,7 @@ def make_icon() -> QIcon:
     p.setPen(Qt.PenStyle.NoPen)
     p.drawEllipse(4, 4, 56, 56)
     p.setBrush(Qt.BrushStyle.NoBrush)
-    pen = p.pen()
-    from PySide6.QtGui import QPen
-
-    pen = QPen(QColor(theme.ACCENT), 7)
-    p.setPen(pen)
+    p.setPen(QPen(QColor(theme.ACCENT), 7))
     p.drawEllipse(12, 12, 40, 40)
     p.setPen(QPen(QColor(theme.OK), 7))
     p.drawArc(12, 12, 40, 40, 45 * 16, 120 * 16)
@@ -61,12 +57,11 @@ class OsmoApp:
         menu = QMenu()
         act_open = QAction("Open Osmo Offload", menu)
         act_open.triggered.connect(self.show_window)
-        act_transfer = QAction("Transfer new files", menu)
-        act_transfer.triggered.connect(self.window.transfer_requested)
+        self.act_transfer = QAction("Transfer new files", menu)
         act_quit = QAction("Quit", menu)
         act_quit.triggered.connect(self.qt.quit)
         menu.addAction(act_open)
-        menu.addAction(act_transfer)
+        menu.addAction(self.act_transfer)
         menu.addSeparator()
         menu.addAction(act_quit)
         self.tray.setContextMenu(menu)
@@ -74,12 +69,125 @@ class OsmoApp:
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
 
-        self.window.closeEvent = self._on_close  # close-to-tray in tray mode
+        self.window.closeEvent = self._on_close
 
+        self.controller = None
         if mock:
             self._fill_mock()
+        else:
+            self._wire_controller()
 
-    # -- behavior ------------------------------------------------------------
+    # -- controller wiring ---------------------------------------------------
+
+    def _wire_controller(self) -> None:
+        from .controller import CameraController  # deferred: pulls in bleak
+
+        c = CameraController(self.settings)
+        self.controller = c
+        w = self.window
+
+        w.transfer_requested.connect(c.transfer)
+        w.refresh_requested.connect(c.refresh)
+        w.cancel_requested.connect(c.cancel)
+        self.act_transfer.triggered.connect(c.transfer)
+
+        c.state_changed.connect(self._on_state)
+        c.status_updated.connect(self._on_status)
+        c.plan_ready.connect(w.set_plan)
+        c.file_progress.connect(self._on_file_progress)
+        c.session_done.connect(self._on_session_done)
+        c.approval_needed.connect(self._on_approval_needed)
+        c.error.connect(lambda msg: self._toast("Osmo Offload", msg, error=True))
+        c.log_line.connect(w.status_line.setText)
+
+        saved = self.state.get("cameras", {})
+        w.set_cameras(
+            [(addr, cam.get("model_name") or cam.get("ssid") or addr, False)
+             for addr, cam in saved.items()]
+        )
+        if saved:
+            first = next(iter(saved.values()))
+            w.card.title.setText(first.get("model_name") or first.get("ssid") or "Camera")
+        self._reload_history()
+
+    def _on_state(self, state: str, detail: str) -> None:
+        w = self.window
+        pill_text = {
+            "idle": "idle", "connecting": "connecting…", "connected": "connected",
+            "transferring": "transferring", "error": "error",
+        }.get(state, state)
+        w.card.pill.set_state(state, pill_text)
+        w.status_line.setText(detail)
+        busy = state in ("connecting", "transferring")
+        w.card.set_busy(busy, transferring=(state == "transferring"))
+        # camera list dot: in-range while a session is live
+        saved = self.state.get("cameras", {})
+        w.set_cameras(
+            [(addr, cam.get("model_name") or cam.get("ssid") or addr,
+              state in ("connecting", "connected", "transferring"))
+             for addr, cam in saved.items()]
+        )
+
+    def _on_status(self, st: dict) -> None:
+        card = self.window.card
+        if "battery_pct" in st and st["battery_pct"] is not None:
+            card.battery.set_state(st.get("battery_pct"), st.get("current_ma"))
+        if "internal_total_mib" in st:
+            card.storage_internal.set_mib(st.get("internal_total_mib"), st.get("internal_free_mib"))
+        if "sd_total_mib" in st:
+            if st.get("sd_total_mib"):
+                card.storage_sd.set_mib(st.get("sd_total_mib"), st.get("sd_free_mib"))
+            else:
+                card.storage_sd.set_absent("no card")
+
+    def _on_file_progress(self, name: str, done: int, total: int,
+                          fdone: int, ftotal: int, rate: float) -> None:
+        self.window.update_file_progress(name, done, total, "downloading")
+        pct = 100 * done / total if total else 0
+        self.window.status_line.setText(
+            f"{name} — {pct:.0f}% · file {fdone + 1}/{ftotal} · {rate:.1f} MB/s"
+        )
+        if done >= total and total:
+            self.window.update_file_progress(name, done, total, "done")
+
+    def _on_session_done(self, summary: dict) -> None:
+        self._reload_history()
+        if summary.get("mode") == "transfer":
+            files = summary.get("files", 0)
+            if files:
+                self._toast(
+                    "Transfer complete",
+                    f"{files} file(s), {human_size(summary.get('bytes', 0))} "
+                    f"at {summary.get('rate_mbs', 0):.0f} MB/s",
+                )
+            elif not summary.get("failures"):
+                self._toast("Osmo Offload", "Nothing new to transfer.")
+            if summary.get("failures"):
+                self._toast("Transfer finished with failures",
+                            "; ".join(summary["failures"][:3]), error=True)
+
+    def _on_approval_needed(self) -> None:
+        self.show_window()
+        self.window.status_line.setText("Approve the pairing prompt on the camera screen (reads OSMO)")
+        self._toast("Camera pairing", "Tap approve on the camera screen.")
+
+    def _reload_history(self) -> None:
+        if not self.controller:
+            return
+        rows = []
+        for t in self.controller.db.recent(limit=500):
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(t.finished_at)) if t.finished_at else "…"
+            saved_as = t.dest_name or (t.dest_path.replace("\\", "/").rsplit("/", 1)[-1])
+            rows.append((when, t.name, saved_as, human_size(t.size),
+                         "yes" if t.verified else ("no" if t.status == "done" else t.status),
+                         t.dest_path))
+        self.window.set_history_rows(rows)
+
+    def _toast(self, title: str, msg: str, error: bool = False) -> None:
+        icon = QSystemTrayIcon.MessageIcon.Critical if error else QSystemTrayIcon.MessageIcon.Information
+        self.tray.showMessage(title, msg, icon, 4000)
+
+    # -- window/tray behavior ------------------------------------------------
 
     def _on_close(self, event) -> None:
         if self.settings.get("tray_mode", True):
@@ -106,6 +214,8 @@ class OsmoApp:
         self.settings.update(settings)
         self.state.update(settings)
         config.save_state(self.state)
+        if self.controller:
+            self.controller.settings = self.settings
         self.window.status_line.setText("Settings saved")
 
     # -- mock ----------------------------------------------------------------
@@ -114,16 +224,23 @@ class OsmoApp:
         w = self.window
         w.set_cameras([("EC:72:F7:C4:88:A7", "Osmo Pocket 4 Pro", True)])
         w.card.title.setText("Osmo Pocket 4 Pro")
-        w.card.state.setText("in range")
+        w.card.pill.set_state("connected", "connected")
         w.card.battery.set_state(86, -240)
-        w.card.storage_internal.set_mib(524288, 198656)  # 512 GB, 194 free
-        w.card.storage_sd.set_mib(491520, 398336)
+        w.card.storage_internal.set_mib(105510, 77000)
+        w.card.storage_sd.set_absent("no card")
+        w.set_plan(
+            [
+                ("DJI_20260820125927_0001_D.MP4", 252541325, "already offloaded"),
+                ("DJI_20260820143000_0002_D.MP4", 1934567890, "queued"),
+                ("DJI_20260820143120_0003_D.JPG", 8123456, "queued"),
+            ]
+        )
+        w.update_file_progress("DJI_20260820143000_0002_D.MP4", 1350000000, 1934567890, "downloading")
         w.set_history_rows(
             [
-                ("2026-08-20 13:02", "DJI_20260820125512_0004_D.MP4", "video", "3.98 GB",
-                 "D:/DJI-Offload/OsmoPocket4P/2026-08-20/video", "yes"),
-                ("2026-08-20 13:01", "DJI_20260820125101_0003_D.JPG", "photo", "8.1 MB",
-                 "D:/DJI-Offload/OsmoPocket4P/2026-08-20/photo", "yes"),
+                ("2026-08-20 13:28", "DJI_20260820125927_0001_D.MP4",
+                 "2026-08-20_125927_P4P_0001.mp4", "252.54 MB", "yes",
+                 "D:/DJI-Offload/OsmoPocket4P-88A6/2026-08-20/video/2026-08-20_125927_P4P_0001.mp4"),
             ]
         )
         w.status_line.setText("Mock mode — no camera I/O")

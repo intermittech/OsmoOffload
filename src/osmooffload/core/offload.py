@@ -131,6 +131,7 @@ class Offloader:
                     parsed.kind, item.size or 0,
                     {0: "sd", 1: "internal", None: None}.get(rec.storage),
                     str(item.dest),
+                    dest_name=item.dest.name,
                 )
 
                 def on_bytes(done: int, total: int) -> None:
@@ -149,8 +150,9 @@ class Offloader:
                     prog.done_files += 1
                     prog.done_bytes += result.size
                     rate = result.size / result.seconds / 1e6 if result.seconds else 0
-                    log.info("done %s (%d B, %.1f MB/s%s)", rec.name, result.size, rate,
-                             f", resumed@{result.resumed_from}" if result.resumed_from else "")
+                    renamed = f" -> {item.dest.name}" if item.dest.name != rec.name else ""
+                    log.info("done %s%s (%d B, %.1f MB/s%s)", rec.name, renamed, result.size,
+                             rate, f", resumed@{result.resumed_from}" if result.resumed_from else "")
                 except DownloadError as e:
                     self.db.finish_transfer(tid, "failed", None, False)
                     prog.failures.append(f"{rec.name}: {e}")

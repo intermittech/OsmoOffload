@@ -45,7 +45,8 @@ def test_history_roundtrip(tmp_path: Path):
     cam = "Pocket4P-88A6"
     sid = db.start_session(cam)
     assert not db.is_offloaded(cam, "DCIM/DJI_001/DJI_X", 123)
-    tid = db.start_transfer(sid, cam, "DCIM/DJI_001/DJI_X", "DJI_X.MP4", "video", 123, "internal", "D:/out/x.mp4")
+    tid = db.start_transfer(sid, cam, "DCIM/DJI_001/DJI_X", "DJI_X.MP4", "video", 123,
+                            "internal", "D:/out/x.mp4", dest_name="x.mp4")
     assert not db.is_offloaded(cam, "DCIM/DJI_001/DJI_X", 123)  # pending doesn't count
     db.finish_transfer(tid, "done", "aabb", verified=True)
     assert db.is_offloaded(cam, "DCIM/DJI_001/DJI_X", 123)
@@ -54,6 +55,7 @@ def test_history_roundtrip(tmp_path: Path):
     db.finish_session(sid, 1, 123)
     rows = db.recent()
     assert len(rows) == 1 and rows[0].status == "done" and rows[0].verified
+    assert rows[0].name == "DJI_X.MP4" and rows[0].dest_name == "x.mp4"
     db.mark_deleted_from_camera(cam, "DCIM/DJI_001/DJI_X")
     db.close()
 
