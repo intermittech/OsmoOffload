@@ -1,37 +1,44 @@
-"""'Ember' design language — warm dark neutrals, amber brand, semantic status.
+"""'Slate & Ember' design language — fresh graphite neutrals, warm data colors.
 
 Color roles:
-- Amber = interactive/brand (buttons, focus, active tab, transfer progress).
-- Battery = computed red->amber->green gradient (see widgets.battery_color).
-- Storage = two shades of one copper/sand hue (internal deep, SD light).
-- Green/red are reserved for semantic states (connected/error, full storage).
+- Chrome is neutral cool graphite; the COLOR lives in the data: battery
+  gradient (red->amber->green) and the copper/sand storage shades.
+- Amber survives only in small doses: active tab, focus, selection borders,
+  progress chunks, checkboxes. Never as large surfaces.
+- The primary action is a light neutral button (fresh, quiet, high contrast)
+  at natural width — no full-width color slabs.
+- Green/red stay reserved for semantic states (connected/error, full storage).
 
-Motion tokens: DUR_FAST for color/hover-ish feedback, DUR for value moves;
-ease-out, interruptible, no continuous timers — the UI must stay snappy.
+Motion tokens: ease-out, interruptible, ~220 ms, skipped when hidden.
 """
 
-# neutrals (warm-tinted)
-BG = "#131110"
-BG_PANEL = "#181512"
-BG_CARD = "#1f1b16"
-BG_INSET = "#0f0d0a"
-BORDER = "#372f23"
-FG = "#ece7dd"
-FG_DIM = "#a69d8d"
+# neutrals (cool graphite)
+BG = "#141619"
+BG_PANEL = "#1a1d21"
+BG_CARD = "#212429"
+BG_INSET = "#0f1113"
+BORDER = "#343a42"
+FG = "#e9ebee"
+FG_DIM = "#9ba3ad"
 
-# brand / interactive (amber)
-ACCENT = "#e59b23"
-ACCENT_HOVER = "#f2af42"
-ACCENT_DIM = "#8a5f18"
-ON_ACCENT = "#191006"
+# small-dose accent (amber, ties the chrome to the warm data colors)
+ACCENT = "#e0a23e"
+ACCENT_HOVER = "#efb658"
+ACCENT_DIM = "#7d5c26"
+ON_ACCENT = "#16120a"
+
+# primary action (light neutral)
+PRIMARY = "#e8ebef"
+PRIMARY_HOVER = "#ffffff"
+ON_PRIMARY = "#191c20"
 
 # storage family — two shades of the same copper/sand hue
 STORE_INTERNAL = "#c07830"
 STORE_SD = "#e3ab55"
 
 # semantic
-OK = "#43bd72"
-WARN = "#e59b23"
+OK = "#3fbd74"
+WARN = "#e0a23e"
 ERR = "#ef5a4c"
 
 # motion tokens (ms)
@@ -67,12 +74,12 @@ QPushButton:pressed {{ background: {BG_INSET}; }}
 QPushButton:focus {{ border: 1px solid {ACCENT}; outline: none; }}
 QPushButton:disabled {{ color: #6a6152; border-color: #241f17; background: {BG_PANEL}; }}
 QPushButton#primary {{
-    background: {ACCENT}; color: {ON_ACCENT}; border: 1px solid {ACCENT_HOVER};
-    font-weight: 700; padding: 11px 22px; font-size: 11.5pt;
+    background: {PRIMARY}; color: {ON_PRIMARY}; border: 1px solid {PRIMARY};
+    font-weight: 650; padding: 9px 20px; font-size: 11pt;
 }}
-QPushButton#primary:hover {{ background: {ACCENT_HOVER}; }}
-QPushButton#primary:pressed {{ background: {ACCENT_DIM}; color: {FG}; }}
-QPushButton#primary:disabled {{ background: #3a3020; border-color: #4a3d26; color: #8a7c60; }}
+QPushButton#primary:hover {{ background: {PRIMARY_HOVER}; border-color: {PRIMARY_HOVER}; }}
+QPushButton#primary:pressed {{ background: #c7ccd3; border-color: #c7ccd3; }}
+QPushButton#primary:disabled {{ background: #2b2f35; border-color: #343a42; color: #6d747d; }}
 QPushButton#danger {{ border-color: {ERR}; color: {ERR}; }}
 QPushButton#danger:hover {{ background: #2c1713; }}
 

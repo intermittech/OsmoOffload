@@ -95,9 +95,10 @@ class CameraCard(QWidget):
         self.btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_cancel.clicked.connect(self.cancel_clicked)
         self.btn_cancel.hide()
-        buttons.addWidget(self.btn_transfer, 1)
+        buttons.addWidget(self.btn_transfer)
         buttons.addWidget(self.btn_refresh)
         buttons.addWidget(self.btn_cancel)
+        buttons.addStretch(1)
         root.addLayout(buttons)
 
     def set_busy(self, busy: bool, transferring: bool = False) -> None:
@@ -108,6 +109,7 @@ class CameraCard(QWidget):
 
 class MediaTab(QWidget):
     transfer_selected = Signal(list)
+    delete_offloaded = Signal()
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -134,9 +136,17 @@ class MediaTab(QWidget):
         self.btn_get.clicked.connect(
             lambda: self.transfer_selected.emit(self.checked_names())
         )
+        self.btn_free = QPushButton("Free up camera…")
+        self.btn_free.setObjectName("danger")
+        self.btn_free.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_free.setToolTip(
+            "Delete files from the camera that have a verified copy on this PC."
+        )
+        self.btn_free.clicked.connect(self.delete_offloaded)
         bar.addWidget(self.btn_new)
         bar.addWidget(self.btn_none)
         bar.addStretch(1)
+        bar.addWidget(self.btn_free)
         bar.addWidget(self.btn_get)
         v.addLayout(bar)
 
@@ -236,7 +246,7 @@ class MediaTab(QWidget):
         self.btn_get.setEnabled(n > 0)
 
     def set_busy(self, busy: bool) -> None:
-        for b in (self.btn_new, self.btn_none):
+        for b in (self.btn_new, self.btn_none, self.btn_free):
             b.setEnabled(not busy)
         self.btn_get.setEnabled(not busy and bool(self.checked_names()))
 
@@ -340,6 +350,7 @@ class SettingsTab(QWidget):
 class MainWindow(QWidget):
     transfer_requested = Signal()
     transfer_selected_requested = Signal(list)
+    delete_offloaded_requested = Signal()
     refresh_requested = Signal()
     cancel_requested = Signal()
     settings_saved = Signal(dict)
@@ -380,6 +391,7 @@ class MainWindow(QWidget):
         self.tabs = QTabWidget()
         self.media = MediaTab()
         self.media.transfer_selected.connect(self.transfer_selected_requested)
+        self.media.delete_offloaded.connect(self.delete_offloaded_requested)
         self.queue = TablePane(
             ["File", "Size", "Progress", "Status"],
             "Nothing queued yet.\nRefresh previews what's new; Transfer pulls it in.",

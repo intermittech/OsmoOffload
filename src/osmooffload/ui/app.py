@@ -88,6 +88,7 @@ class OsmoApp:
 
         w.transfer_requested.connect(c.transfer)
         w.transfer_selected_requested.connect(c.transfer_selected)
+        w.delete_offloaded_requested.connect(self._confirm_delete)
         w.refresh_requested.connect(c.refresh)
         w.cancel_requested.connect(c.cancel)
         self.act_transfer.triggered.connect(c.transfer)
@@ -164,8 +165,36 @@ class OsmoApp:
         if done >= total and total:
             self.window.update_file_progress(name, done, total, "done")
 
+    def _confirm_delete(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        box = QMessageBox(self.window)
+        box.setWindowTitle("Free up camera")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText("Delete files from the camera that already have a verified copy on this PC?")
+        box.setInformativeText(
+            "Only files whose transfer was completed and size-verified are touched. "
+            "This cannot be undone on the camera."
+        )
+        box.setStandardButtons(QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes)
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        if box.exec() == QMessageBox.StandardButton.Yes and self.controller:
+            self.controller.delete_offloaded()
+
     def _on_session_done(self, summary: dict) -> None:
         self._reload_history()
+        if summary.get("mode") == "delete":
+            if summary.get("deleted"):
+                self._toast(
+                    "Camera freed up",
+                    f"Deleted {summary['deleted']} file(s), "
+                    f"{human_size(summary.get('freed', 0))} freed on the camera.",
+                )
+            elif summary.get("failures"):
+                self._toast("Free up camera", "; ".join(summary["failures"][:3]), error=True)
+            else:
+                self._toast("Free up camera", "Nothing on the camera is safe to delete yet.")
+            return
         if summary.get("mode") == "transfer":
             files = summary.get("files", 0)
             if files:

@@ -124,6 +124,10 @@ class CameraController(QObject):
         """Transfer exactly the named files (Media tab cherry-pick)."""
         self._submit(self._session(transfer=True, selected=set(names)))
 
+    def delete_offloaded(self) -> None:
+        """Delete files from the camera that have a VERIFIED copy on disk."""
+        self._submit(self._delete_session())
+
     # -- auto-transfer watcher ----------------------------------------------
 
     AUTO_COOLDOWN_S = 15 * 60  # min gap between auto sessions
@@ -281,6 +285,105 @@ class CameraController(QObject):
             _keep_awake(False)
             await conn.teardown(link)
             self.state_changed.emit("idle", "Camera released (it will sleep)")
+
+    async def _delete_session(self) -> None:
+        state = config.load_state()
+        address = next(iter(state.get("cameras", {})), None)
+        self.state_changed.emit("connecting", "Scanning for camera…")
+        link, creds, target = await conn.establish(
+            state, address, on_approval_needed=lambda: self.approval_needed.emit()
+        )
+        link.on_frame = self._on_ble_frame
+        try:
+            self.state_changed.emit("connecting", "Opening data session…")
+            identifier = config.get_identifier(state)
+            cam_folder = (
+                target.name or creds.ssid
+                or f"{target.model_name}-{target.address[-5:].replace(':', '')}"
+            ).replace(" ", "")
+            summary = await asyncio.to_thread(self._delete_blocking, identifier, cam_folder)
+            self.state_changed.emit(
+                "connected",
+                f"Freed {summary['freed'] / 1e6:.0f} MB — deleted "
+                f"{summary['deleted']}/{summary['candidates']} offloaded file(s)"
+                if summary["candidates"]
+                else "Nothing on the camera is safe to delete yet",
+            )
+            self.session_done.emit(summary)
+        finally:
+            _keep_awake(False)
+            await conn.teardown(link)
+            self.state_changed.emit("idle", "Camera released (it will sleep)")
+
+    def _delete_blocking(self, identifier: str, cam_folder: str) -> dict:
+        """Open a fresh session, list, delete only verified-offloaded files
+        (one at a time), then RE-LIST to confirm what is actually gone."""
+        from ..core.offload import OffloadConfig, Offloader
+        from pathlib import Path
+
+        summary = {"mode": "delete", "candidates": 0, "deleted": 0, "freed": 0, "failures": []}
+        for attempt, (port, poke) in enumerate([(9004, True), (9004, True)], 1):
+            dl = CameraDatalink(conn.CAMERA_IP, port=port, tcp_poke=poke, identifier=identifier)
+            try:
+                if not dl.open():
+                    continue
+                dl.register()
+                dl.enter_playback()
+                records, _ = dl.query_newest_page()
+                if not records:
+                    if attempt == 1:
+                        continue
+                    summary["failures"].append("camera returned no media list")
+                    return summary
+
+                http = CameraHttp(conn.CAMERA_IP)
+                cfg = OffloadConfig(
+                    base_dir=Path(self.settings.get("base_dir", "D:/DJI-Offload")),
+                    camera_folder=cam_folder,
+                    template=self.settings.get("template", "{original}"),
+                )
+                plan = Offloader(cfg, self.db, http).plan(records)
+                http.close()
+
+                # eligibility: verified transfer on record + a unique non-zero handle
+                handle_counts: dict[int, int] = {}
+                for p in plan:
+                    handle_counts[p.record.handle] = handle_counts.get(p.record.handle, 0) + 1
+                todo = []
+                for p in plan:
+                    rec = p.record
+                    if not rec.handle or handle_counts[rec.handle] != 1:
+                        continue
+                    if not p.size or not self.db.deletable(cam_folder, rec.media_path, p.size):
+                        continue
+                    todo.append(p)
+                summary["candidates"] = len(todo)
+                if not todo:
+                    return summary
+
+                for p in todo:  # one at a time — deliberate, per hardware guidance
+                    status = dl.delete_files([p.record.handle])
+                    if status not in (None, 0x0000):
+                        summary["failures"].append(f"{p.record.name}: status 0x{status:04x}")
+
+                # authoritative verification: what does the camera list NOW?
+                remaining_paths = set()
+                records_after, _ = dl.query_newest_page()
+                remaining_paths = {r.media_path for r in records_after}
+                for p in todo:
+                    if p.record.media_path in remaining_paths:
+                        if not any(p.record.name in f for f in summary["failures"]):
+                            summary["failures"].append(f"{p.record.name}: still on camera")
+                    else:
+                        self.db.mark_deleted_from_camera(cam_folder, p.record.media_path)
+                        summary["deleted"] += 1
+                        summary["freed"] += p.size or 0
+                return summary
+            finally:
+                dl.close()
+            time.sleep(1.0)
+        summary["failures"].append("could not open a data session")
+        return summary
 
     def _fetch_thumbs(self, http: CameraHttp, plan, cam_folder: str) -> None:
         """Fetch + cache camera thumbnails (.scr JPEGs, ~tens of KB each) and

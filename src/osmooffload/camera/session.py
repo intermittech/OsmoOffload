@@ -234,6 +234,60 @@ class CameraDatalink:
     def presence_beat(self) -> None:
         self.tx.send_duml(0x00, 0x88, APP_PRESENCE, receiver_type=0x08, receiver_id=1)
 
+    # -- inline commands -----------------------------------------------------
+
+    def run_command(
+        self, cmd_set: int, cmd_id: int, payload: bytes,
+        receiver_type: int = 0x01, receiver_id: int = 0,
+        timeout: float = 2.5, cmd_type: int = 2,
+    ) -> bytes | None:
+        """Send a command and wait for its non-empty reply frame (the camera
+        sends an empty transport ACK first — skip it). Status keeps parsing."""
+        self.tx.send_duml(cmd_set, cmd_id, payload, receiver_type=receiver_type,
+                          receiver_id=receiver_id, cmd_type=cmd_type)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            got = self.tx.recv_all(0.3)
+            self._parse_status(got)
+            for d in got:
+                for cs, ci, pl in mf.iter_frames(d):
+                    if cs == cmd_set and ci == cmd_id and pl:
+                        return pl
+            self.tx.send_ack()
+        return None
+
+    # -- delete (irreversible) ----------------------------------------------
+
+    @staticmethod
+    def delete_payload(handles: list[int]) -> bytes:
+        """0x00/0x28 payload: [count:u8][handle:u32-LE x n][n:u32] 00 [n:u32] 01 01 00 00"""
+        n = len(handles)
+        out = bytearray([n])
+        for h in handles:
+            out += struct.pack("<I", h)
+        out += struct.pack("<I", n) + b"\x00" + struct.pack("<I", n) + bytes([1, 1, 0, 0])
+        return bytes(out)
+
+    def delete_files(self, handles: list[int]) -> int | None:
+        """Delete by manifest handles. Returns the status word (0x0000 = OK,
+        0x00d6 = no such handle) or None when no reply arrived — in which case
+        the delete MAY still have landed: verify by re-listing, NEVER re-send
+        (cameras reuse file numbers, so a stale handle can hit a newer file).
+        """
+        if not handles:
+            return None
+        # Hardware finding (osmosis): deletes are only answered while the
+        # camera is actually in playback — re-assert right before, every time.
+        self.run_command(0x02, 0x0C, bytes.fromhex("01010001"), timeout=1.5)
+        log.info("DELETE 0x00/0x28 handles=%s", [f"0x{h:08x}" for h in handles])
+        pl = self.run_command(0x00, 0x28, self.delete_payload(handles), timeout=10.0)
+        if pl is None:
+            log.warning("DELETE: no reply — may still have landed; caller must verify by re-list")
+            return None
+        status = pl[0] | (pl[1] << 8) if len(pl) >= 2 else pl[0]
+        log.info("DELETE status=0x%04x", status)
+        return status
+
     # -- media list ----------------------------------------------------------
 
     def query_newest_page(self) -> tuple[list[mf.MediaRecord], bytes]:

@@ -60,6 +60,16 @@ def test_history_roundtrip(tmp_path: Path):
     db.close()
 
 
+def test_delete_payload_matches_capture():
+    from osmooffload.camera.session import CameraDatalink
+
+    # DUML example from MEDIA_PROTOCOL.md §2: delete handle 0x40104480
+    assert (
+        CameraDatalink.delete_payload([0x40104480]).hex()
+        == "018044104001000000000100000001010000"
+    )
+
+
 def test_media_url_quoting():
     assert (
         CameraHttp.media_url(1, "DCIM/DJI_001/DJI_20260820143000_0012_D.MP4")

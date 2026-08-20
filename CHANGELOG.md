@@ -5,6 +5,23 @@ v1.0.0 is declared by the project owner.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-20
+### Verified on hardware — delete-from-camera
+- "Free up camera" deletes only files with a completed, size-verified transfer
+  on record: one at a time, playback re-asserted before each, status checked
+  (0x0000), then an authoritative RE-LIST confirms what is actually gone; the
+  history rows gain deleted-from-camera timestamps. Live run: 2/2 clips
+  (internal + SD store), 1.75 GB freed, camera lists 0 files after.
+  Never re-sends on a silent reply (handles get reused); duplicate handles
+  are refused for all holders.
+- Pocket 4 Pro SD handle geometry confirmed: base 0x00100000, step 0x40.
+### Changed
+- "Slate & Ember" design iteration: fresh graphite neutrals; amber demoted to
+  small accents; primary action is now a quiet light-neutral button at natural
+  width; warm data colors (battery gradient, copper/sand storage) unchanged.
+- Confirm dialog + toasts for the delete flow; "Free up camera…" lives in the
+  Media tab with a danger outline.
+
 ## [0.6.0] - 2026-08-20
 ### Verified on hardware
 - Media tab thumbnails fetched live from the camera (`.scr` JPEGs over /v2,
