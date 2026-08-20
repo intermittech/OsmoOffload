@@ -317,6 +317,38 @@ class SettingsTab(QWidget):
         self.keep_awake.setChecked(bool(settings.get("keep_awake", True)))
         root.addWidget(self.keep_awake)
 
+        kinds_row = QHBoxLayout()
+        kinds_lab = QLabel("Transfer")
+        kinds_lab.setMinimumWidth(180)
+        self.kinds_video = QCheckBox("Videos")
+        self.kinds_video.setChecked(bool(settings.get("kinds_video", True)))
+        self.kinds_photo = QCheckBox("Photos")
+        self.kinds_photo.setChecked(bool(settings.get("kinds_photo", True)))
+        kinds_row.addWidget(kinds_lab)
+        kinds_row.addWidget(self.kinds_video)
+        kinds_row.addWidget(self.kinds_photo)
+        kinds_row.addStretch(1)
+        root.addLayout(kinds_row)
+
+        self.write_reports = QCheckBox("Write a session report after each transfer (HTML + CSV)")
+        self.write_reports.setChecked(bool(settings.get("write_reports", True)))
+        root.addWidget(self.write_reports)
+
+        self.open_folder = QCheckBox("Open the destination folder when a transfer finishes")
+        self.open_folder.setChecked(bool(settings.get("open_folder", False)))
+        root.addWidget(self.open_folder)
+
+        h3 = QHBoxLayout()
+        lab3 = QLabel("After-transfer command")
+        lab3.setMinimumWidth(180)
+        self.hook_cmd = QLineEdit(settings.get("hook_cmd", ""))
+        self.hook_cmd.setPlaceholderText(
+            "optional — e.g. powershell -File ingest.ps1  (gets OSMO_DEST, OSMO_REPORT, OSMO_FILES…)"
+        )
+        h3.addWidget(lab3)
+        h3.addWidget(self.hook_cmd, 1)
+        root.addLayout(h3)
+
         root.addStretch(1)
         note = QLabel(
             "WiFi adapter: system default (picker appears when several are present).\n"
@@ -343,6 +375,11 @@ class SettingsTab(QWidget):
             start_minimized=self.start_minimized.isChecked(),
             auto_transfer=self.auto_transfer.isChecked(),
             keep_awake=self.keep_awake.isChecked(),
+            kinds_video=self.kinds_video.isChecked(),
+            kinds_photo=self.kinds_photo.isChecked(),
+            write_reports=self.write_reports.isChecked(),
+            open_folder=self.open_folder.isChecked(),
+            hook_cmd=self.hook_cmd.text().strip(),
         )
         self.changed.emit(dict(self._settings))
 

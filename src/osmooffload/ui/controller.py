@@ -27,6 +27,7 @@ from ..core import connect as conn
 from ..core.offload import OffloadConfig, Offloader, SessionProgress
 from ..history import HistoryDB
 from ..net.downloader import CameraHttp
+from ..net.wifi import rejoin_sync as wifi_rejoin
 
 log = logging.getLogger("osmo.ui")
 
@@ -172,16 +173,29 @@ class CameraController(QObject):
             cur = int.from_bytes(frame.payload[5:9], "little", signed=True)
             self.status_updated.emit({"battery_pct": frame.payload[20], "current_ma": cur})
 
+    async def _establish(self, state: dict, address: str | None):
+        """conn.establish with one automatic retry for transient failures
+        (AP no-show, association timeouts) — not for camera-not-found."""
+        for attempt in (1, 2):
+            try:
+                return await conn.establish(
+                    state, address, on_approval_needed=lambda: self.approval_needed.emit()
+                )
+            except conn.ConnectError as e:
+                if attempt == 1 and "not found" not in str(e).lower():
+                    self.log_line.emit("Connection hiccup — retrying once…")
+                    log.warning("establish failed (%s) — retrying", e)
+                    await asyncio.sleep(2.0)
+                    continue
+                raise
+
     async def _session(self, transfer: bool, selected: set | None = None) -> None:
         state = config.load_state()
         saved = state.get("cameras", {})
         address = next(iter(saved), None)
 
         self.state_changed.emit("connecting", "Scanning for camera…")
-        link, creds, target = await conn.establish(
-            state, address,
-            on_approval_needed=lambda: self.approval_needed.emit(),
-        )
+        link, creds, target = await self._establish(state, address)
         link.on_frame = self._on_ble_frame
         try:
             self.state_changed.emit("connecting", "Opening data session…")
@@ -205,13 +219,20 @@ class CameraController(QObject):
                 target.name or creds.ssid
                 or f"{target.model_name}-{target.address[-5:].replace(':', '')}"
             ).replace(" ", "")
+            kinds = ["other"]
+            if self.settings.get("kinds_video", True):
+                kinds.append("video")
+            if self.settings.get("kinds_photo", True):
+                kinds.append("photo")
             cfg = OffloadConfig(
                 base_dir=Path(self.settings.get("base_dir", "D:/DJI-Offload")),
                 camera_folder=cam_folder,
                 template=self.settings.get("template", "{original}"),
+                kinds=tuple(kinds),
             )
             http = CameraHttp(conn.CAMERA_IP)
             off = Offloader(cfg, self.db, http)
+            off.on_network_lost = lambda: wifi_rejoin(creds.ssid)
 
             self.state_changed.emit("connected", "Planning…")
             plan = await asyncio.to_thread(off.plan, records)
@@ -273,6 +294,12 @@ class CameraController(QObject):
                 "rate_mbs": result.done_bytes / max(secs, 0.01) / 1e6,
                 "failures": result.failures,
             }
+            if result.results:
+                extras = await asyncio.to_thread(
+                    self._post_transfer, result, cam_folder, cfg.base_dir, secs,
+                    summary["rate_mbs"],
+                )
+                summary.update(extras)
             self.state_changed.emit(
                 "connected",
                 f"Done: {result.done_files}/{result.total_files} files "
@@ -286,13 +313,70 @@ class CameraController(QObject):
             await conn.teardown(link)
             self.state_changed.emit("idle", "Camera released (it will sleep)")
 
+    def _post_transfer(self, result: SessionProgress, cam_folder: str,
+                       base_dir: Path, secs: float, rate_mbs: float) -> dict:
+        """Shoot summary (local MP4 probe), session report, folder-open, hook."""
+        import os
+        import subprocess
+
+        from ..core import mp4meta
+        from ..core.report import ReportFile, SessionReport, write_reports
+
+        files = []
+        for r in result.results:
+            meta = mp4meta.probe(Path(r["dest_path"])) if r["kind"] == "video" else None
+            files.append(ReportFile(
+                original=r["original"], saved_as=r["saved_as"], dest_path=r["dest_path"],
+                size=r["size"], hash_hex=r["hash"], storage=r["storage"], kind=r["kind"],
+                verified=r["verified"],
+                duration_s=meta.duration_s if meta else None,
+                resolution=meta.resolution if meta else None,
+            ))
+        rep = SessionReport(
+            camera=cam_folder, started_at=time.time() - secs,
+            seconds=secs, rate_mbs=rate_mbs, files=files,
+        )
+        extras: dict = {"summary_line": rep.summary_line()}
+
+        if self.settings.get("write_reports", True):
+            try:
+                html_path, csv_path = write_reports(rep, base_dir / cam_folder / "_reports")
+                extras["report"] = str(html_path)
+                log.info("session report: %s", html_path)
+            except Exception:
+                log.exception("report writing failed")
+
+        if self.settings.get("open_folder", False) and files:
+            try:
+                os.startfile(str(Path(files[0].dest_path).parent))
+            except Exception as e:
+                log.warning("open folder failed: %s", e)
+
+        hook = (self.settings.get("hook_cmd") or "").strip()
+        if hook:
+            env = {
+                **os.environ,
+                "OSMO_CAMERA": cam_folder,
+                "OSMO_COUNT": str(len(files)),
+                "OSMO_BYTES": str(rep.total_bytes),
+                "OSMO_DEST": str(base_dir / cam_folder),
+                "OSMO_REPORT": extras.get("report", ""),
+                "OSMO_FILES": os.pathsep.join(f.dest_path for f in files),
+            }
+            try:
+                subprocess.Popen(hook, shell=True, env=env,
+                                 creationflags=subprocess.CREATE_NO_WINDOW)
+                log.info("post-transfer hook launched: %s", hook)
+                extras["hook_launched"] = True
+            except Exception as e:
+                log.warning("hook failed to launch: %s", e)
+        return extras
+
     async def _delete_session(self) -> None:
         state = config.load_state()
         address = next(iter(state.get("cameras", {})), None)
         self.state_changed.emit("connecting", "Scanning for camera…")
-        link, creds, target = await conn.establish(
-            state, address, on_approval_needed=lambda: self.approval_needed.emit()
-        )
+        link, creds, target = await self._establish(state, address)
         link.on_frame = self._on_ble_frame
         try:
             self.state_changed.emit("connecting", "Opening data session…")

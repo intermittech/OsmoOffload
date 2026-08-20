@@ -125,6 +125,36 @@ async def disconnect(iface: str | None = None) -> None:
     await _netsh(*args)
 
 
+def rejoin_sync(ssid: str, timeout: float = 30.0) -> bool:
+    """Blocking WiFi rejoin for worker threads (mid-transfer AP blip recovery).
+    The profile already exists from the initial join."""
+    import subprocess
+    import time as _time
+
+    try:
+        subprocess.run(
+            ["netsh", "wlan", "connect", f"name={ssid}"],
+            capture_output=True, timeout=10, check=False,
+        )
+    except Exception as e:
+        log.debug("rejoin connect failed: %s", e)
+        return False
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        try:
+            out = subprocess.run(
+                ["netsh", "wlan", "show", "interfaces"],
+                capture_output=True, timeout=10, check=False,
+            ).stdout.decode("mbcs", "replace")
+            if "connected" in out.lower() and ssid.lower() in out.lower():
+                log.info("rejoined %s after AP blip", ssid)
+                return True
+        except Exception:
+            pass
+        _time.sleep(1.5)
+    return False
+
+
 async def wait_for_ip(prefix: str = "192.168.2.", timeout: float = 20.0) -> str:
     """Wait for a DHCP address in the camera's subnet on any interface."""
     deadline = asyncio.get_running_loop().time() + timeout

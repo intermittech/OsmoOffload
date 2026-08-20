@@ -48,6 +48,8 @@ class SessionProgress:
     current_name: str = ""
     current_done: int = 0
     current_total: int = 0
+    session_id: int | None = None
+    results: list[dict] = field(default_factory=list)  # per completed file
     failures: list[str] = field(default_factory=list)
 
 
@@ -56,6 +58,9 @@ class Offloader:
         self.cfg = cfg
         self.db = db
         self.http = http
+        # optional hook: called when a download hits network loss; should try
+        # to restore connectivity (e.g. rejoin the camera AP) and return
+        self.on_network_lost = None
 
     # -- planning ------------------------------------------------------------
 
@@ -116,6 +121,7 @@ class Offloader:
             total_bytes=sum(i.size or 0 for i in todo),
         )
         session_id = self.db.start_session(self.cfg.camera_folder)
+        prog.session_id = session_id
         try:
             for item in todo:
                 if cancelled and cancelled():
@@ -144,11 +150,24 @@ class Offloader:
                         item.storage_idx or 0, item.url_path, item.dest,
                         expected_size=item.size or None,
                         progress=on_bytes, cancelled=cancelled,
+                        on_network_lost=self.on_network_lost,
                     )
                     verified = item.size is None or result.size == item.size
                     self.db.finish_transfer(tid, "done", result.hash_hex, verified)
                     prog.done_files += 1
                     prog.done_bytes += result.size
+                    prog.results.append(
+                        {
+                            "original": rec.name,
+                            "saved_as": item.dest.name,
+                            "dest_path": str(item.dest),
+                            "size": result.size,
+                            "hash": result.hash_hex,
+                            "storage": {0: "sd", 1: "internal", None: None}.get(rec.storage),
+                            "kind": parsed.kind,
+                            "verified": verified,
+                        }
+                    )
                     rate = result.size / result.seconds / 1e6 if result.seconds else 0
                     renamed = f" -> {item.dest.name}" if item.dest.name != rec.name else ""
                     log.info("done %s%s (%d B, %.1f MB/s%s)", rec.name, renamed, result.size,

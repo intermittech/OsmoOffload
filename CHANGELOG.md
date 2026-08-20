@@ -5,6 +5,21 @@ v1.0.0 is declared by the project owner.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-20
+### Added
+- Session ingest reports: HTML + CSV written to `<base>\<camera>\_reports\`
+  after each transfer — original/renamed names, sizes, hashes, store, per-clip
+  duration + resolution, verified flags, and a shoot-summary header.
+- Shoot summary via a local stdlib MP4 box parser (moov/mvhd + tkhd) —
+  validated against real 4 Pro clips (4K durations parsed exactly).
+- Settings: transfer filters (videos/photos), "write session reports",
+  "open destination folder when done", and an after-transfer command hook
+  (receives OSMO_CAMERA/COUNT/BYTES/DEST/REPORT/FILES in its environment).
+### Fixed / hardened
+- One automatic retry when connect fails transiently (AP no-show).
+- Mid-transfer network-loss recovery: after repeated socket errors the
+  downloader asks for a WiFi rejoin (netsh) and resumes from byte offset.
+
 ## [0.7.0] - 2026-08-20
 ### Verified on hardware — delete-from-camera
 - "Free up camera" deletes only files with a completed, size-verified transfer

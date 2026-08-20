@@ -116,6 +116,7 @@ class CameraHttp:
         progress: ProgressCb | None = None,
         max_retries: int = 6,
         cancelled: Callable[[], bool] | None = None,
+        on_network_lost: Callable[[], None] | None = None,
     ) -> DownloadResult:
         """Resumable download to `dest` (via `dest.part`), returns hash + timing."""
         t0 = time.monotonic()
@@ -198,6 +199,13 @@ class CameraHttp:
                     raise DownloadError(f"{type(e).__name__}: {e}") from e
                 log.info("retrying %s (%s: %s), attempt %d, resume at %d",
                          dest.name, type(e).__name__, e, retries, pos)
+                # network-level failure: give the caller a chance to rejoin
+                # the camera AP before the next resume attempt
+                if on_network_lost and retries >= 2 and isinstance(e, OSError):
+                    try:
+                        on_network_lost()
+                    except Exception as re:
+                        log.debug("network-recovery hook failed: %s", re)
                 time.sleep(min(2.0 * retries, 8.0))
 
         if expected_size is not None and pos != expected_size:

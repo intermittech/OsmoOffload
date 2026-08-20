@@ -46,6 +46,11 @@ class OsmoApp:
             "start_minimized": self.state.get("start_minimized", False),
             "auto_transfer": self.state.get("auto_transfer", False),
             "keep_awake": self.state.get("keep_awake", True),
+            "kinds_video": self.state.get("kinds_video", True),
+            "kinds_photo": self.state.get("kinds_photo", True),
+            "write_reports": self.state.get("write_reports", True),
+            "open_folder": self.state.get("open_folder", False),
+            "hook_cmd": self.state.get("hook_cmd", ""),
         }
 
         self.icon = make_icon()
@@ -200,9 +205,12 @@ class OsmoApp:
             if files:
                 self._toast(
                     "Transfer complete",
-                    f"{files} file(s), {human_size(summary.get('bytes', 0))} "
-                    f"at {summary.get('rate_mbs', 0):.0f} MB/s",
+                    summary.get("summary_line")
+                    or f"{files} file(s), {human_size(summary.get('bytes', 0))} "
+                       f"at {summary.get('rate_mbs', 0):.0f} MB/s",
                 )
+                if summary.get("summary_line"):
+                    self.window.status_line.setText("Done — " + summary["summary_line"])
             elif not summary.get("failures"):
                 self._toast("Osmo Offload", "Nothing new to transfer.")
             if summary.get("failures"):
