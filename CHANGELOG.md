@@ -5,6 +5,21 @@ v1.0.0 is declared by the project owner.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-20
+### Verified on hardware — GUI-driven transfer, dual-store
+- Full transfer through the GUI: 1.5 GB clip from the **SD card** at 63 MB/s,
+  with both mounts probed live (SD -> /v2 storage=0, internal -> 1 on the
+  Pocket 4 Pro). Dedup left the internal clip untouched.
+### Added
+- GUI wired to the live core: worker-thread controller (asyncio BLE loop),
+  connection state pill, live battery/storage card, queue with per-file
+  progress, tray toasts, cancel, keep-PC-awake during transfers.
+- History records the original DJI filename AND the renamed destination
+  (`dest_name` column + migration); History tab shows Original name /
+  Saved as (full path as tooltip); transfer log lines show `orig -> renamed`.
+- UI/UX pass per ui-ux-pro-max v2.13 data: OLED-leaning palette, semantic
+  state colors, focus/hover/disabled states, empty states, cursor affordances.
+
 ## [0.4.0] - 2026-08-20
 ### Verified on hardware — first full wireless offload
 - End-to-end: BLE wake -> AP join -> datalink -> playback -> list -> plan ->
