@@ -87,6 +87,23 @@ class CameraController(QObject):
         self._busy = True
         self._cancel = False
 
+        # every camera session gets its own DEBUG log file, linked from history
+        config.LOG_DIR.mkdir(parents=True, exist_ok=True)
+        self.current_log_path = str(
+            config.LOG_DIR / f"session-{time.strftime('%Y%m%d-%H%M%S')}.log"
+        )
+        handler = logging.FileHandler(self.current_log_path, encoding="utf-8")
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
+        )
+        root = logging.getLogger()
+        if root.level > logging.DEBUG:
+            root.setLevel(logging.DEBUG)
+        for noisy in ("bleak", "asyncio"):
+            logging.getLogger(noisy).setLevel(logging.INFO)
+        root.addHandler(handler)
+
         async def wrapped():
             try:
                 await coro
@@ -101,6 +118,8 @@ class CameraController(QObject):
                 self._busy = False
                 self._last_session_end = time.monotonic()
                 _keep_awake(False)
+                root.removeHandler(handler)
+                handler.close()
 
         asyncio.run_coroutine_threadsafe(wrapped(), self._loop)
 
@@ -128,6 +147,107 @@ class CameraController(QObject):
     def delete_offloaded(self) -> None:
         """Delete files from the camera that have a VERIFIED copy on disk."""
         self._submit(self._delete_session())
+
+    def usb_ingest(self) -> None:
+        """Ingest from cabled DJI volumes (both banks) — same pipeline, no radio."""
+        self._submit(self._usb_session())
+
+    async def _usb_session(self) -> None:
+        from ..core.usb_ingest import UsbIngester, find_dji_volumes
+
+        self.state_changed.emit("connecting", "Looking for DJI volumes on USB…")
+        vols = await asyncio.to_thread(find_dji_volumes)
+        if not vols:
+            raise conn.ConnectError(
+                "No DJI camera volumes found. Connect the camera by USB "
+                "(it must present as a drive) and try again."
+            )
+        state = config.load_state()
+        saved = state.get("cameras", {})
+        if len(saved) == 1:
+            cam = next(iter(saved.values()))
+            cam_folder = (cam.get("name") or cam.get("ssid") or "Camera").replace(" ", "")
+        else:
+            cam_folder = f"USB-{vols[0].label}".replace(" ", "")
+
+        kinds = ["other"]
+        if self.settings.get("kinds_video", True):
+            kinds.append("video")
+        if self.settings.get("kinds_photo", True):
+            kinds.append("photo")
+        cfg = OffloadConfig(
+            base_dir=Path(self.settings.get("base_dir", "D:/DJI-Offload")),
+            camera_folder=cam_folder,
+            template=self.settings.get("template", "{original}"),
+            kinds=tuple(kinds),
+            log_path=getattr(self, "current_log_path", None),
+        )
+
+        def blocking() -> tuple[SessionProgress, list]:
+            ingester = UsbIngester(cfg, self.db)
+            plans = [(v, ingester.plan(v)) for v in vols]
+            rows = [
+                (uf.name, uf.size, skip or "queued")
+                for _v, items in plans
+                for uf, _d, skip in items
+            ]
+            self.plan_ready.emit(rows)
+            agg = SessionProgress()
+            t0 = time.monotonic()
+            last_emit = [0.0]
+
+            def on_prog(p: SessionProgress) -> None:
+                now = time.monotonic()
+                complete = p.current_total and p.current_done >= p.current_total
+                if now - last_emit[0] < 0.1 and not complete:
+                    return
+                last_emit[0] = now
+                done = agg.done_bytes + p.done_bytes + p.current_done
+                rate = done / max(now - t0, 0.01) / 1e6
+                self.file_progress.emit(
+                    p.current_name, p.current_done, p.current_total,
+                    agg.done_files + p.done_files,
+                    agg.total_files + p.total_files, rate,
+                )
+
+            for _v, items in plans:
+                agg.total_files += sum(1 for _u, _d, s in items if not s)
+                agg.total_bytes += sum(u.size for u, _d, s in items if not s)
+            for _v, items in plans:
+                res = ingester.run(items, on_prog, lambda: self._cancel)
+                agg.done_files += res.done_files
+                agg.done_bytes += res.done_bytes
+                agg.results.extend(res.results)
+                agg.failures.extend(res.failures)
+                if self._cancel:
+                    break
+            return agg, plans
+
+        self.state_changed.emit("transferring", f"USB ingest from {len(vols)} volume(s)…")
+        if self.settings.get("keep_awake", True):
+            _keep_awake(True)
+        t0 = time.monotonic()
+        result, _plans = await asyncio.to_thread(blocking)
+        secs = time.monotonic() - t0
+        summary = {
+            "mode": "transfer", "transport": "usb",
+            "files": result.done_files, "files_total": result.total_files,
+            "bytes": result.done_bytes, "seconds": secs,
+            "rate_mbs": result.done_bytes / max(secs, 0.01) / 1e6,
+            "failures": result.failures,
+        }
+        if result.results:
+            extras = await asyncio.to_thread(
+                self._post_transfer, result, cam_folder, cfg.base_dir, secs,
+                summary["rate_mbs"],
+            )
+            summary.update(extras)
+        self.state_changed.emit(
+            "idle",
+            f"USB ingest done: {result.done_files}/{result.total_files} files"
+            if result.total_files else "USB: nothing new on the camera volumes",
+        )
+        self.session_done.emit(summary)
 
     # -- auto-transfer watcher ----------------------------------------------
 
@@ -200,7 +320,9 @@ class CameraController(QObject):
         try:
             self.state_changed.emit("connecting", "Opening data session…")
             identifier = config.get_identifier(state)
-            records, cam_status = await asyncio.to_thread(self._fetch_records, identifier)
+            records, cam_status, answered = await asyncio.to_thread(
+                self._fetch_records, identifier
+            )
             if cam_status:
                 self.status_updated.emit(
                     {
@@ -213,7 +335,16 @@ class CameraController(QObject):
                     }
                 )
             if not records:
-                raise conn.ConnectError("Connected, but the camera returned no media list.")
+                if answered:
+                    self.plan_ready.emit([])
+                    self.state_changed.emit("connected", "Camera is empty — nothing to transfer")
+                    self.session_done.emit(
+                        {"mode": "transfer" if transfer else "refresh",
+                         "files": 0, "bytes": 0, "failures": [], "empty_camera": True,
+                         "new": 0, "total": 0}
+                    )
+                    return
+                raise conn.ConnectError("Connected, but the camera never answered the media list.")
 
             cam_folder = (
                 target.name or creds.ssid
@@ -229,6 +360,7 @@ class CameraController(QObject):
                 camera_folder=cam_folder,
                 template=self.settings.get("template", "{original}"),
                 kinds=tuple(kinds),
+                log_path=getattr(self, "current_log_path", None),
             )
             http = CameraHttp(conn.CAMERA_IP)
             off = Offloader(cfg, self.db, http)
@@ -426,8 +558,12 @@ class CameraController(QObject):
                     camera_folder=cam_folder,
                     template=self.settings.get("template", "{original}"),
                 )
+                cfg.log_path = getattr(self, "current_log_path", None)
                 plan = Offloader(cfg, self.db, http).plan(records)
                 http.close()
+                del_session = self.db.start_session(
+                    cam_folder, transport="delete", log_path=cfg.log_path
+                )
 
                 # eligibility: verified transfer on record + a unique non-zero handle
                 handle_counts: dict[int, int] = {}
@@ -462,6 +598,10 @@ class CameraController(QObject):
                         self.db.mark_deleted_from_camera(cam_folder, p.record.media_path)
                         summary["deleted"] += 1
                         summary["freed"] += p.size or 0
+                self.db.finish_session(
+                    del_session, summary["deleted"], summary["freed"],
+                    note="delete: " + ("; ".join(summary["failures"][:3]) or "ok"),
+                )
                 return summary
             finally:
                 dl.close()
@@ -491,6 +631,10 @@ class CameraController(QObject):
                     break
 
     def _fetch_records(self, identifier: str):
+        """Returns (records, status, answered). answered=True with an empty
+        list means the camera really is empty — not a dead session."""
+        from ..camera import manifest as mf
+
         last_status = None
         for attempt, (port, poke) in enumerate([(9004, True), (10004, False), (9004, True)], 1):
             dl = CameraDatalink(conn.CAMERA_IP, port=port, tcp_poke=poke, identifier=identifier)
@@ -499,12 +643,15 @@ class CameraController(QObject):
                     continue
                 dl.register()
                 dl.enter_playback()
-                records, _raw = dl.query_newest_page()
+                records, raw = dl.query_newest_page()
                 last_status = dl.status
                 if records:
-                    return records, dl.status
-                log.warning("empty list on attempt %d (port %d)", attempt, port)
+                    return records, dl.status, True
+                if mf.list_answered(raw):
+                    log.info("camera answered the list with zero records — it is empty")
+                    return [], dl.status, True
+                log.warning("list unanswered on attempt %d (port %d)", attempt, port)
             finally:
                 dl.close()
             time.sleep(1.0)
-        return [], last_status
+        return [], last_status, False

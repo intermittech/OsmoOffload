@@ -5,6 +5,27 @@ v1.0.0 is declared by the project owner.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-20
+### Verified on hardware
+- Empty-camera handling: a camera that answers the list with zero records now
+  reads "Camera is empty" instead of an error (live-tested); an unanswered
+  list is still retried and reported honestly.
+### Added
+- Per-session DEBUG log files, recorded in history; the History tab gained an
+  **Open log** button on every transfer row (plus original name / saved-as).
+- **USB ingest** ("From USB"): strict DJI-volume detection (DCIM + DJI markers,
+  never a random stick), both banks, same dedup/naming/history/report pipeline.
+- **First-run wizard**: base folder, radio check/enable, guided pairing.
+- **Update check** against GitHub releases (Settings → owner/repo; quiet check
+  at startup, "Check now" button opens the release page when newer).
+- **Packaging**: PyInstaller onefile exe (frozen config lives in
+  %APPDATA%\OsmoOffload), Inno Setup installer with selectable
+  "Start with Windows" + desktop shortcut, per-user install, clean uninstall
+  that keeps user data; `scripts\build.ps1` builds both.
+### Verified
+- 31 unit tests; the frozen exe boots and renders identically (screenshot
+  smoke test built into the binary via `--mock --screenshot`).
+
 ## [0.8.0] - 2026-08-20
 ### Added
 - Session ingest reports: HTML + CSV written to `<base>\<camera>\_reports\`

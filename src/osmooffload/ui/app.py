@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 import time
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
@@ -51,6 +51,7 @@ class OsmoApp:
             "write_reports": self.state.get("write_reports", True),
             "open_folder": self.state.get("open_folder", False),
             "hook_cmd": self.state.get("hook_cmd", ""),
+            "update_repo": self.state.get("update_repo", ""),
         }
 
         self.icon = make_icon()
@@ -81,6 +82,8 @@ class OsmoApp:
             self._fill_mock()
         else:
             self._wire_controller()
+            self._maybe_wizard()
+            QTimer.singleShot(6000, self._check_update_quiet)
 
     # -- controller wiring ---------------------------------------------------
 
@@ -94,6 +97,8 @@ class OsmoApp:
         w.transfer_requested.connect(c.transfer)
         w.transfer_selected_requested.connect(c.transfer_selected)
         w.delete_offloaded_requested.connect(self._confirm_delete)
+        w.card.usb_clicked.connect(c.usb_ingest)
+        w.settings_tab.check_update.connect(self._check_update_loud)
         w.refresh_requested.connect(c.refresh)
         w.cancel_requested.connect(c.cancel)
         self.act_transfer.triggered.connect(c.transfer)
@@ -170,6 +175,63 @@ class OsmoApp:
         if done >= total and total:
             self.window.update_file_progress(name, done, total, "done")
 
+    def _maybe_wizard(self) -> None:
+        if self.state.get("wizard_done") or self.state.get("cameras"):
+            return
+        from .wizard import FirstRunWizard
+
+        wiz = FirstRunWizard(self.settings)
+        wiz.setWindowIcon(self.icon)
+        wiz.pair_requested.connect(lambda: self.controller and self.controller.refresh())
+        wiz.exec()
+        self.state.update(
+            base_dir=self.settings.get("base_dir"), wizard_done=True
+        )
+        config.save_state(self.state)
+
+    # -- update check --------------------------------------------------------
+
+    def _run_update_check(self, loud: bool) -> None:
+        import threading
+
+        from .. import __version__, update
+
+        repo = (self.settings.get("update_repo") or "").strip()
+        if not repo:
+            if loud:
+                self._toast("Updates", "Set a GitHub repo (owner/repo) in Settings first.")
+            return
+
+        def work() -> None:
+            info = update.check(__version__, repo)
+
+            def apply() -> None:
+                if info:
+                    self.window.status_line.setText(
+                        f"Update available: v{info.latest} — {info.url}"
+                    )
+                    self._toast("Update available",
+                                f"Osmo Offload v{info.latest} is out. Opening: {info.url}"
+                                if loud else f"Osmo Offload v{info.latest} is available — see Settings.")
+                    if loud:
+                        import webbrowser
+
+                        webbrowser.open(info.url)
+                elif loud:
+                    self._toast("Updates", f"You're on the latest version (v{__version__}).")
+
+            QTimer.singleShot(0, apply)  # hop back to the GUI thread
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _check_update_quiet(self) -> None:
+        self._run_update_check(loud=False)
+
+    def _check_update_loud(self) -> None:
+        # pick up an unsaved repo field so "Check now" works immediately
+        self.settings["update_repo"] = self.window.settings_tab.update_repo.text().strip()
+        self._run_update_check(loud=True)
+
     def _confirm_delete(self) -> None:
         from PySide6.QtWidgets import QMessageBox
 
@@ -231,7 +293,7 @@ class OsmoApp:
             saved_as = t.dest_name or (t.dest_path.replace("\\", "/").rsplit("/", 1)[-1])
             rows.append((when, t.name, saved_as, human_size(t.size),
                          "yes" if t.verified else ("no" if t.status == "done" else t.status),
-                         t.dest_path))
+                         t.dest_path, t.log_path))
         self.window.set_history_rows(rows)
 
     def _toast(self, title: str, msg: str, error: bool = False) -> None:
@@ -291,16 +353,25 @@ class OsmoApp:
             [
                 ("2026-08-20 13:28", "DJI_20260820125927_0001_D.MP4",
                  "2026-08-20_125927_P4P_0001.mp4", "252.54 MB", "yes",
-                 "D:/DJI-Offload/OsmoPocket4P-88A6/2026-08-20/video/2026-08-20_125927_P4P_0001.mp4"),
+                 "D:/DJI-Offload/OsmoPocket4P-88A6/2026-08-20/video/2026-08-20_125927_P4P_0001.mp4",
+                 None),
             ]
         )
         w.status_line.setText("Mock mode — no camera I/O")
 
-    def run(self) -> int:
-        if not (self.settings.get("tray_mode") and self.settings.get("start_minimized")):
+    def run(self, screenshot: str | None = None) -> int:
+        if screenshot:
+            self.window.show()
+
+            def grab() -> None:
+                self.window.grab().save(screenshot)
+                self.qt.quit()
+
+            QTimer.singleShot(1500, grab)
+        elif not (self.settings.get("tray_mode") and self.settings.get("start_minimized")):
             self.window.show()
         return self.qt.exec()
 
 
-def run_app(mock: bool = False) -> int:
-    return OsmoApp(mock=mock).run()
+def run_app(mock: bool = False, screenshot: str | None = None) -> int:
+    return OsmoApp(mock=mock).run(screenshot=screenshot)

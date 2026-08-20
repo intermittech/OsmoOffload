@@ -55,6 +55,7 @@ class StatusPill(QLabel):
 class CameraCard(QWidget):
     transfer_clicked = Signal()
     refresh_clicked = Signal()
+    usb_clicked = Signal()
     cancel_clicked = Signal()
 
     def __init__(self, parent: QWidget | None = None):
@@ -90,6 +91,10 @@ class CameraCard(QWidget):
         self.btn_refresh = QPushButton("Refresh")
         self.btn_refresh.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_refresh.clicked.connect(self.refresh_clicked)
+        self.btn_usb = QPushButton("From USB")
+        self.btn_usb.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_usb.setToolTip("Ingest from a cable-connected camera through the same pipeline")
+        self.btn_usb.clicked.connect(self.usb_clicked)
         self.btn_cancel = QPushButton("Cancel")
         self.btn_cancel.setObjectName("danger")
         self.btn_cancel.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -97,6 +102,7 @@ class CameraCard(QWidget):
         self.btn_cancel.hide()
         buttons.addWidget(self.btn_transfer)
         buttons.addWidget(self.btn_refresh)
+        buttons.addWidget(self.btn_usb)
         buttons.addWidget(self.btn_cancel)
         buttons.addStretch(1)
         root.addLayout(buttons)
@@ -104,6 +110,7 @@ class CameraCard(QWidget):
     def set_busy(self, busy: bool, transferring: bool = False) -> None:
         self.btn_transfer.setEnabled(not busy)
         self.btn_refresh.setEnabled(not busy)
+        self.btn_usb.setEnabled(not busy)
         self.btn_cancel.setVisible(transferring)
 
 
@@ -273,6 +280,7 @@ class TablePane(QWidget):
 
 class SettingsTab(QWidget):
     changed = Signal(dict)
+    check_update = Signal()
 
     def __init__(self, settings: dict, parent: QWidget | None = None):
         super().__init__(parent)
@@ -349,8 +357,24 @@ class SettingsTab(QWidget):
         h3.addWidget(self.hook_cmd, 1)
         root.addLayout(h3)
 
+        h4 = QHBoxLayout()
+        lab4 = QLabel("Update source (GitHub)")
+        lab4.setMinimumWidth(180)
+        self.update_repo = QLineEdit(settings.get("update_repo", ""))
+        self.update_repo.setPlaceholderText("owner/repo — enables the update check")
+        self.btn_update = QPushButton("Check now")
+        self.btn_update.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_update.clicked.connect(self.check_update)
+        h4.addWidget(lab4)
+        h4.addWidget(self.update_repo, 1)
+        h4.addWidget(self.btn_update)
+        root.addLayout(h4)
+
         root.addStretch(1)
+        from .. import __version__
+
         note = QLabel(
+            f"Osmo Offload v{__version__}\n"
             "WiFi adapter: system default (picker appears when several are present).\n"
             "Bluetooth: Windows always routes through its default radio."
         )
@@ -380,6 +404,7 @@ class SettingsTab(QWidget):
             write_reports=self.write_reports.isChecked(),
             open_folder=self.open_folder.isChecked(),
             hook_cmd=self.hook_cmd.text().strip(),
+            update_repo=self.update_repo.text().strip(),
         )
         self.changed.emit(dict(self._settings))
 
@@ -434,8 +459,11 @@ class MainWindow(QWidget):
             "Nothing queued yet.\nRefresh previews what's new; Transfer pulls it in.",
         )
         self.history = TablePane(
-            ["When", "Original name", "Saved as", "Size", "Verified"],
+            ["When", "Original name", "Saved as", "Size", "Verified", "Log"],
             "No transfers recorded yet.",
+        )
+        self.history.table.horizontalHeader().setSectionResizeMode(
+            5, QHeaderView.ResizeMode.ResizeToContents
         )
         self.settings_tab = SettingsTab(settings)
         self.settings_tab.changed.connect(self.settings_saved)
@@ -499,14 +527,25 @@ class MainWindow(QWidget):
             bar.animate_to(int(1000 * done / total))
         self.queue.table.setItem(r, 3, QTableWidgetItem(status))
 
-    def set_history_rows(self, rows: list[tuple[str, str, str, str, str, str]]) -> None:
-        """rows: (when, original, saved_as, size, verified, dest_path_tooltip)"""
+    def set_history_rows(self, rows: list[tuple]) -> None:
+        """rows: (when, original, saved_as, size, verified, dest_path_tooltip, log_path)"""
+        import os
+
         t = self.history.table
         t.setRowCount(len(rows))
-        for r, (when, orig, saved_as, size, verified, dest_tip) in enumerate(rows):
+        for r, (when, orig, saved_as, size, verified, dest_tip, log_path) in enumerate(rows):
             for c, val in enumerate((when, orig, saved_as, size, verified)):
                 item = QTableWidgetItem(val)
                 if c == 2 and dest_tip:
                     item.setToolTip(dest_tip)
                 t.setItem(r, c, item)
+            if log_path and os.path.exists(log_path):
+                btn = QPushButton("Open log")
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.setToolTip(log_path)
+                btn.setStyleSheet("padding: 3px 10px; font-size: 9pt;")
+                btn.clicked.connect(lambda _=False, p=log_path: os.startfile(p))
+                t.setCellWidget(r, 5, btn)
+            else:
+                t.setItem(r, 5, QTableWidgetItem("—"))
         self.history.show_rows(bool(rows))

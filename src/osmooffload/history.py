@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     transport TEXT NOT NULL DEFAULT 'wifi',
     files_done INTEGER NOT NULL DEFAULT 0,
     bytes_done INTEGER NOT NULL DEFAULT 0,
+    log_path TEXT,
     note TEXT
 );
 CREATE TABLE IF NOT EXISTS transfers (
@@ -60,6 +61,7 @@ class TransferRow:
     status: str
     verified: bool
     finished_at: float | None
+    log_path: str | None = None  # the session log this transfer belongs to
 
 
 class HistoryDB:
@@ -73,11 +75,15 @@ class HistoryDB:
         with self._lock:
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.executescript(SCHEMA)
-            # migration for DBs created before dest_name existed
-            try:
-                self._db.execute("ALTER TABLE transfers ADD COLUMN dest_name TEXT")
-            except sqlite3.OperationalError:
-                pass  # column already there
+            # migrations for DBs created before these columns existed
+            for stmt in (
+                "ALTER TABLE transfers ADD COLUMN dest_name TEXT",
+                "ALTER TABLE sessions ADD COLUMN log_path TEXT",
+            ):
+                try:
+                    self._db.execute(stmt)
+                except sqlite3.OperationalError:
+                    pass  # column already there
             self._db.commit()
 
     def close(self) -> None:
@@ -85,10 +91,11 @@ class HistoryDB:
 
     # -- sessions ------------------------------------------------------------
 
-    def start_session(self, camera_id: str, transport: str = "wifi") -> int:
+    def start_session(self, camera_id: str, transport: str = "wifi",
+                      log_path: str | None = None) -> int:
         cur = self._db.execute(
-            "INSERT INTO sessions(camera_id, started_at, transport) VALUES(?,?,?)",
-            (camera_id, time.time(), transport),
+            "INSERT INTO sessions(camera_id, started_at, transport, log_path) VALUES(?,?,?,?)",
+            (camera_id, time.time(), transport, log_path),
         )
         self._db.commit()
         return cur.lastrowid
@@ -150,16 +157,18 @@ class HistoryDB:
 
     def recent(self, limit: int = 200, camera_id: str | None = None) -> list[TransferRow]:
         q = (
-            "SELECT id, camera_id, media_path, name, kind, size, dest_name, dest_path, "
-            "status, verified, finished_at FROM transfers "
+            "SELECT t.id, t.camera_id, t.media_path, t.name, t.kind, t.size, t.dest_name, "
+            "t.dest_path, t.status, t.verified, t.finished_at, s.log_path "
+            "FROM transfers t LEFT JOIN sessions s ON t.session_id = s.id "
         )
         args: tuple = ()
         if camera_id:
-            q += "WHERE camera_id=? "
+            q += "WHERE t.camera_id=? "
             args = (camera_id,)
-        q += "ORDER BY started_at DESC LIMIT ?"
+        q += "ORDER BY t.started_at DESC LIMIT ?"
         rows = self._db.execute(q, args + (limit,)).fetchall()
         return [
-            TransferRow(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], bool(r[9]), r[10])
+            TransferRow(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], bool(r[9]),
+                        r[10], r[11])
             for r in rows
         ]

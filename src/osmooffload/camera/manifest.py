@@ -173,3 +173,9 @@ def decode(buf: bytes) -> list[MediaRecord]:
 
 def header_count(buf: bytes) -> int:
     return struct.unpack_from("<I", buf, 0)[0] if len(buf) >= 4 else 0
+
+
+def list_answered(raw: bytes) -> bool:
+    """True if the camera sent ANY 0x00/0x27 list frame (start/end markers
+    included) — distinguishes 'camera is empty' from 'query never answered'."""
+    return any(cs == 0x00 and ci == 0x27 for cs, ci, _pl in iter_frames(raw))

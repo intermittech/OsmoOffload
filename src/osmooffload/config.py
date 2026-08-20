@@ -11,13 +11,22 @@ a remembered slot; retries with a different identifier read as a second app).
 from __future__ import annotations
 
 import json
+import os
 import secrets
+import sys
 from pathlib import Path
 from typing import Any
 
-CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
+
+def _base_dir() -> Path:
+    if getattr(sys, "frozen", False):  # packaged exe: per-user app data
+        return Path(os.environ.get("APPDATA", Path.home())) / "OsmoOffload"
+    return Path(__file__).resolve().parents[2]
+
+
+CONFIG_DIR = _base_dir() / "config"
 STATE_FILE = CONFIG_DIR / "appstate.json"
-LOG_DIR = Path(__file__).resolve().parents[2] / "logs"
+LOG_DIR = _base_dir() / "logs"
 
 
 def load_state() -> dict[str, Any]:

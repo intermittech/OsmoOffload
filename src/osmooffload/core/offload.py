@@ -27,6 +27,7 @@ class OffloadConfig:
     template: str = "{original}"
     kinds: tuple[str, ...] = ("video", "photo", "other")
     split_kind_folders: bool = True
+    log_path: str | None = None  # session log file, recorded in history
 
 
 @dataclass
@@ -120,7 +121,7 @@ class Offloader:
             total_files=len(todo),
             total_bytes=sum(i.size or 0 for i in todo),
         )
-        session_id = self.db.start_session(self.cfg.camera_folder)
+        session_id = self.db.start_session(self.cfg.camera_folder, log_path=self.cfg.log_path)
         prog.session_id = session_id
         try:
             for item in todo:
