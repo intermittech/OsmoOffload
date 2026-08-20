@@ -97,7 +97,10 @@ async def main() -> int:
         if not records:
             log.error("no media records — see log for datalink details")
             return 3
-        cam_folder = (target.name or f"{target.model_name}-{target.address[-5:].replace(':', '')}").replace(" ", "")
+        cam_folder = (
+            target.name or creds.ssid
+            or f"{target.model_name}-{target.address[-5:].replace(':', '')}"
+        ).replace(" ", "")
         cfg = OffloadConfig(
             base_dir=base_dir,
             camera_folder=cam_folder,

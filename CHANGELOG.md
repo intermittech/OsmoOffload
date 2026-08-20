@@ -4,6 +4,13 @@ All notable changes to Osmo Offload. Versions follow [SemVer](https://semver.org
 v1.0.0 is declared by the project owner.
 
 ## [Unreleased]
+
+## [0.4.0] - 2026-08-20
+### Verified on hardware — first full wireless offload
+- End-to-end: BLE wake -> AP join -> datalink -> playback -> list -> plan ->
+  download. 252.5 MB clip in 4 s (**61.4 MB/s avg**), valid MP4, landed in
+  `<base>\<camera>\<date>\video\`. Rerun skips it ("already offloaded").
+- Battery + dual-store storage decoded live (SD absent reads 0/0 as documented).
 ### Added
 - Offload pipeline: naming/templates + dated `video|photo` folder layout,
   SQLite transfer history (sessions, hashes, verified flag, delete gating),
@@ -11,9 +18,18 @@ v1.0.0 is declared by the project owner.
   offload planner/orchestrator with per-store mount probing and history dedup.
 - Shared async bring-up helper (`core/connect.py`) and end-to-end CLI
   (`scripts/offload.py`) with `--dry-run`, filters, template override.
-- UDP datalink transport + camera session (registration, playback hold,
-  media-list query, status decode) ported from osmosis — hardware bring-up
-  in progress.
+- GUI skeleton (PySide6): dark theme, tray mode + start-minimized, camera
+  card with battery/storage bars in the locked display format, tabs.
+### Fixed
+- History DB usable from worker threads (`check_same_thread=False`).
+
+## [0.3.0] - 2026-08-20
+### Verified on hardware — datalink + media list
+- UDP 9004 handshake (fix: 40-byte SYN had lost 4 bytes in transcription —
+  now derived from the reference frame with an import-time guard), TCP-7001
+  poke, registration, playback hold (with 0x01/0x01 fallback), chunked
+  0x00/0x27 manifest reassembly, per-store split (SD/internal), record decode
+  (paths, sizes, handles, thumbs). Stale-session quirk recovers via retry.
 
 ## [0.2.0] - 2026-08-20
 ### Verified on hardware

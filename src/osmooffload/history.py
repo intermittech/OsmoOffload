@@ -7,6 +7,7 @@ file land where?", and stores the receive-hash for verified transfers.
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,10 +63,15 @@ class TransferRow:
 class HistoryDB:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(path)
-        self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.executescript(SCHEMA)
-        self._db.commit()
+        # Accessed from worker threads (asyncio.to_thread / GUI workers).
+        # Callers are sequential today; _lock guards init and any future
+        # concurrent paths (GUI must serialize through one worker or _lock).
+        self._db = sqlite3.connect(path, check_same_thread=False)
+        self._lock = threading.Lock()
+        with self._lock:
+            self._db.execute("PRAGMA journal_mode=WAL")
+            self._db.executescript(SCHEMA)
+            self._db.commit()
 
     def close(self) -> None:
         self._db.close()
