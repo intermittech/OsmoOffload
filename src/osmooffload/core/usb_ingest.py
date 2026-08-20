@@ -137,16 +137,16 @@ class UsbIngester:
         return self.cfg.base_dir.joinpath(*parts, out_name)
 
     def plan(self, vol: UsbVolume) -> list[tuple[UsbFile, Path, str | None]]:
+        # filesystem at the CURRENT destination decides "already on disk" —
+        # a changed base folder must sync everything again (see Offloader.plan)
         items = []
         for uf in vol.files:
             parsed = naming.parse_name(uf.name)
             skip = None
+            dest = self._dest_for(uf.name)
             if parsed.kind not in self.cfg.kinds:
                 skip = f"filtered ({parsed.kind})"
-            elif self.db.is_offloaded(self.cfg.camera_folder, uf.media_path, uf.size):
-                skip = "already on disk"
-            dest = self._dest_for(uf.name)
-            if skip is None and dest.exists() and dest.stat().st_size == uf.size:
+            elif dest.exists() and dest.stat().st_size == uf.size:
                 skip = "already on disk"
             items.append((uf, dest, skip))
         return items

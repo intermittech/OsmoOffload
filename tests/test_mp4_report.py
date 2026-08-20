@@ -51,6 +51,41 @@ def test_usb_volume_detection(tmp_path):
     assert vol.files[0].media_path == "DCIM/DJI_001/DJI_20260820133506_0001_D"
 
 
+def test_new_base_folder_resyncs(tmp_path):
+    """History says transferred, but the CURRENT destination is empty ->
+    the file must be planned again (filesystem is the source of truth)."""
+    from osmooffload.core.offload import OffloadConfig
+    from osmooffload.core.usb_ingest import UsbFile, UsbIngester, UsbVolume
+    from osmooffload.history import HistoryDB
+
+    src = tmp_path / "src" / "DJI_20260820120000_0001_D.MP4"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"x" * 1000)
+    uf = UsbFile(src=src, media_path="DCIM/DJI_001/DJI_20260820120000_0001_D",
+                 name=src.name, size=1000)
+    vol = UsbVolume(root=tmp_path / "src", label="TEST", files=[uf])
+
+    db = HistoryDB(tmp_path / "h.sqlite3")
+    sid = db.start_session("CamX")
+    tid = db.start_transfer(sid, "CamX", uf.media_path, uf.name, "video", 1000,
+                            "usb", str(tmp_path / "old" / uf.name))
+    db.finish_transfer(tid, "done", "aa", True)
+    assert db.is_offloaded("CamX", uf.media_path, 1000)  # old-world dedup hit
+
+    # NEW empty base folder -> must NOT be skipped
+    cfg = OffloadConfig(base_dir=tmp_path / "new", camera_folder="CamX")
+    items = UsbIngester(cfg, db).plan(vol)
+    assert items[0][2] is None
+
+    # file actually present at the new destination -> skipped
+    dest = items[0][1]
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"x" * 1000)
+    items2 = UsbIngester(cfg, db).plan(vol)
+    assert items2[0][2] == "already on disk"
+    db.close()
+
+
 def test_report_writing(tmp_path):
     rep = SessionReport(
         camera="Pocket4P",

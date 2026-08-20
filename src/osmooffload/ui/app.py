@@ -301,16 +301,16 @@ class OsmoApp:
         if unverified:
             # second, louder gate: these files exist NOWHERE else
             box2 = QMessageBox(self.window)
-            box2.setWindowTitle("Files not yet transferred!")
+            box2.setWindowTitle("Files not in the destination folder!")
             box2.setIcon(QMessageBox.Icon.Critical)
             box2.setText(
-                f"{len(unverified)} of the selected file(s) have NEVER been "
-                "transferred to this PC."
+                f"{len(unverified)} of the selected file(s) have no copy at the "
+                "current destination folder."
             )
             listing = "\n".join(unverified[:8]) + ("\n…" if len(unverified) > 8 else "")
             box2.setInformativeText(
-                f"Deleting them destroys the only copy:\n\n{listing}\n\n"
-                "Delete them anyway?"
+                f"If they were never transferred anywhere, deleting them destroys "
+                f"the only copy:\n\n{listing}\n\nDelete them anyway?"
             )
             box2.setStandardButtons(
                 QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes

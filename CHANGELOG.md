@@ -5,6 +5,18 @@ v1.0.0 is declared by the project owner.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-08-20
+### Fixed
+- **Changing the base folder now resyncs correctly.** "Already on disk" is
+  decided by the filesystem at the CURRENT destination — never by the history
+  database alone. Point the app at a new/empty folder and everything on the
+  camera becomes transferable again (wireless and USB paths; regression test).
+  The delete double-warning wording now says "no copy at the current
+  destination folder" accordingly.
+### Added
+- **"Only unsynced"** selection button (between Last 24 h and None): selection
+  becomes exactly the files not present at the destination folder yet.
+
 ## [0.12.1] - 2026-08-20
 ### Fixed
 - Media tile: a checked tile now shows its kind-colored border, not just the

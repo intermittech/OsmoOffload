@@ -339,8 +339,13 @@ class MediaTab(QWidget):
         self.btn_photo = QPushButton("All photo")
         self.btn_photo.setObjectName("selPhoto")
         self.btn_24h = QPushButton("Last 24 h")
+        self.btn_unsynced = QPushButton("Only unsynced")
+        self.btn_unsynced.setToolTip(
+            "Select exactly the files that are not at the destination folder yet"
+        )
         self.btn_none = QPushButton("None")
-        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_24h, self.btn_none):
+        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_24h,
+                  self.btn_unsynced, self.btn_none):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_all.clicked.connect(lambda: self._select(lambda t: True))
         # additive: kind/time buttons build up the selection
@@ -351,6 +356,8 @@ class MediaTab(QWidget):
             lambda: self._select(lambda t: t.kind == "photo", additive=True)
         )
         self.btn_24h.clicked.connect(self._select_last_24h)
+        # exclusive: the selection becomes exactly the not-yet-synced set
+        self.btn_unsynced.clicked.connect(lambda: self._select(lambda t: not t.on_disk))
         self.btn_none.clicked.connect(lambda: self._select(lambda t: False))
 
         self.btn_get = QPushButton("Transfer selected")
@@ -366,7 +373,8 @@ class MediaTab(QWidget):
             "Delete files from the camera that have a verified copy on this PC."
         )
         self.btn_free.clicked.connect(self.delete_offloaded)
-        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_24h, self.btn_none):
+        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_24h,
+                  self.btn_unsynced, self.btn_none):
             bar.addWidget(b)
         bar.addStretch(1)
         bar.addWidget(self.btn_free)
@@ -448,7 +456,8 @@ class MediaTab(QWidget):
         self.selection_changed.emit()
 
     def set_busy(self, busy: bool) -> None:
-        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_24h, self.btn_none):
+        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_24h,
+                  self.btn_unsynced, self.btn_none):
             b.setEnabled(not busy)
         n = bool(self.checked_names())
         self.btn_get.setEnabled(not busy and n)

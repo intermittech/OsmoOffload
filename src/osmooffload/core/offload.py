@@ -75,7 +75,12 @@ class Offloader:
 
     def plan(self, records: list[MediaRecord]) -> list[PlanItem]:
         """Resolve storage indices per store-group, sizes for the sizeless
-        (photos), and skip what history says is already offloaded."""
+        (photos), and skip what is already at the CURRENT destination.
+
+        The filesystem is the source of truth for 'already on disk' — never
+        the history DB alone. If the user points the app at a new base folder,
+        previously-transferred files must sync again to the new location; the
+        DB record only tells us a copy exists somewhere, not here."""
         items: list[PlanItem] = []
         # group by the record's store label (0/1/None) to probe mounts once per group
         mount_for_group: dict[int | None, int] = {}
@@ -101,13 +106,13 @@ class Offloader:
             if size <= 0:
                 size = self.http.head_size(item.storage_idx, url_path) or 0
             item.size = size
-            if size and self.db.is_offloaded(self.cfg.camera_folder, rec.media_path, size):
-                # user-facing label is ONE thing; the reason lives in the log
-                log.debug("%s: skip (transfer history says done)", rec.name)
+            if item.dest.exists() and (not size or item.dest.stat().st_size == size):
+                log.debug("%s: skip (present at current destination)", rec.name)
                 item.skipped = "already on disk"
-            elif item.dest.exists() and item.dest.stat().st_size == size:
-                log.debug("%s: skip (matching file already at destination)", rec.name)
-                item.skipped = "already on disk"
+            elif size and self.db.is_offloaded(self.cfg.camera_folder, rec.media_path, size):
+                # transferred before, but NOT to this folder — sync it here too
+                log.debug("%s: history says transferred, but absent at current "
+                          "destination — will transfer", rec.name)
             items.append(item)
         return items
 
