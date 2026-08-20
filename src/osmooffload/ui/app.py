@@ -93,6 +93,10 @@ class OsmoApp:
         self.act_transfer.triggered.connect(c.transfer)
 
         c.state_changed.connect(self._on_state)
+        c.camera_seen.connect(self._on_camera_seen)
+        c.auto_started.connect(
+            lambda: self._toast("Osmo Offload", "Camera detected — transferring new files.")
+        )
         c.status_updated.connect(self._on_status)
         c.plan_ready.connect(w.set_plan)
         c.thumb_ready.connect(w.media.set_thumb)
@@ -128,6 +132,13 @@ class OsmoApp:
         w.set_cameras(
             [(addr, cam.get("model_name") or cam.get("ssid") or addr,
               state in ("connecting", "connected", "transferring"))
+             for addr, cam in saved.items()]
+        )
+
+    def _on_camera_seen(self, present: bool) -> None:
+        saved = self.state.get("cameras", {})
+        self.window.set_cameras(
+            [(addr, cam.get("model_name") or cam.get("ssid") or addr, present)
              for addr, cam in saved.items()]
         )
 

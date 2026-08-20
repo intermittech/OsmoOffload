@@ -44,6 +44,8 @@ def _keep_awake(on: bool) -> None:
 
 class CameraController(QObject):
     state_changed = Signal(str, str)  # state key, human detail
+    camera_seen = Signal(bool)  # watcher presence ping (auto-transfer mode)
+    auto_started = Signal()
     status_updated = Signal(dict)  # battery/storage fields
     plan_ready = Signal(list)  # [(name, size, note)] for the queue
     thumb_ready = Signal(str, str)  # file name, cached thumbnail path
@@ -59,9 +61,14 @@ class CameraController(QObject):
         self._busy = False
         self._cancel = False
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._last_session_end = 0.0
+        self._auto_backoff_until = 0.0
         self._thread = threading.Thread(target=self._run_loop, name="osmo-worker", daemon=True)
         self._thread.start()
         self.db = HistoryDB(config.CONFIG_DIR / "history.sqlite3")
+        while self._loop is None:
+            time.sleep(0.01)
+        asyncio.run_coroutine_threadsafe(self._watcher(), self._loop)
 
     # -- worker loop ---------------------------------------------------------
 
@@ -91,6 +98,7 @@ class CameraController(QObject):
                 self.error.emit(f"{type(e).__name__}: {e}")
             finally:
                 self._busy = False
+                self._last_session_end = time.monotonic()
                 _keep_awake(False)
 
         asyncio.run_coroutine_threadsafe(wrapped(), self._loop)
@@ -115,6 +123,42 @@ class CameraController(QObject):
     def transfer_selected(self, names: list) -> None:
         """Transfer exactly the named files (Media tab cherry-pick)."""
         self._submit(self._session(transfer=True, selected=set(names)))
+
+    # -- auto-transfer watcher ----------------------------------------------
+
+    AUTO_COOLDOWN_S = 15 * 60  # min gap between auto sessions
+    AUTO_ERROR_BACKOFF_S = 30 * 60  # after a failed auto run
+    WATCH_INTERVAL_S = 45.0
+
+    async def _watcher(self) -> None:
+        """Passive BLE presence scan; auto-starts a transfer when the saved
+        camera appears, respecting cooldown and error backoff. Never runs
+        while a session is busy, never wakes the camera by itself."""
+        from ..ble import scanner as ble_scanner
+
+        while True:
+            await asyncio.sleep(self.WATCH_INTERVAL_S)
+            if not self.settings.get("auto_transfer") or self._busy:
+                continue
+            now = time.monotonic()
+            if now - self._last_session_end < self.AUTO_COOLDOWN_S:
+                continue
+            if now < self._auto_backoff_until:
+                continue
+            try:
+                cams = await ble_scanner.scan(6.0)
+            except Exception as e:
+                log.debug("watcher scan failed: %s", e)
+                continue
+            saved = {a.lower() for a in config.load_state().get("cameras", {})}
+            present = any(c.address.lower() in saved for c in cams)
+            self.camera_seen.emit(present)
+            if present and not self._busy:
+                log.info("watcher: camera in range — auto-transfer")
+                self.auto_started.emit()
+                self.transfer()
+                # a failed auto session backs off so we don't retry-loop
+                self._auto_backoff_until = time.monotonic() + self.AUTO_ERROR_BACKOFF_S
 
     # -- the session job -----------------------------------------------------
 
@@ -230,6 +274,8 @@ class CameraController(QObject):
                 f"Done: {result.done_files}/{result.total_files} files "
                 f"({result.done_bytes / 1e6:.0f} MB, {summary['rate_mbs']:.0f} MB/s)",
             )
+            if not result.failures:
+                self._auto_backoff_until = 0.0  # clean run: only cooldown gates the next auto
             self.session_done.emit(summary)
         finally:
             _keep_awake(False)
