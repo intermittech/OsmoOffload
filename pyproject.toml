@@ -1,0 +1,22 @@
+[project]
+name = "osmo-offload"
+version = "0.0.1"
+description = "Wireless media offload from DJI Osmo cameras to Windows — no phone, no cable, no DJI account"
+requires-python = ">=3.13"
+dependencies = [
+    "bleak>=3.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
