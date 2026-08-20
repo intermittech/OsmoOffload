@@ -86,6 +86,17 @@ QPushButton#primary:pressed {{ background: #c7ccd3; border-color: #c7ccd3; }}
 QPushButton#primary:disabled {{ background: #2b2f35; border-color: #343a42; color: #6d747d; }}
 QPushButton#danger {{ border-color: {ERR}; color: {ERR}; }}
 QPushButton#danger:hover {{ background: #2c1713; }}
+QPushButton#danger:disabled {{ border-color: #4a2622; color: #7a4a44; }}
+
+/* selection buttons carry the media-kind colors; "All" blends both */
+QPushButton#selVideo {{ border: 2px solid {KIND_VIDEO}; }}
+QPushButton#selPhoto {{ border: 2px solid {KIND_PHOTO}; }}
+QPushButton#selAll {{
+    border-top: 2px solid {KIND_VIDEO}; border-left: 2px solid {KIND_VIDEO};
+    border-bottom: 2px solid {KIND_PHOTO}; border-right: 2px solid {KIND_PHOTO};
+}}
+QPushButton#selVideo:disabled, QPushButton#selPhoto:disabled,
+QPushButton#selAll:disabled {{ border-color: #343a42; }}
 
 QProgressBar {{
     background: {BG_INSET}; border: none; border-radius: 5px; text-align: center;

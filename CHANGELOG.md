@@ -5,6 +5,33 @@ v1.0.0 is declared by the project owner.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-20
+### Fixed — delete now removes ALL selected files (was: only session-new ones)
+- **Root cause found & fixed**: the manifest decoder only searched for the
+  *video* marker `03 ff 19 06`, so stills (and some records written with the
+  short `[fe|ff] 19 06` marker) decoded with handle 0 and were undeletable.
+  Now anchors on the `19 06` pair common to both shapes — handle @ −10, size
+  @ −14. Ground-truthed on a Pocket 4 Pro (seq 5/6/7 → 0x40100140/180/1c0).
+  Verified live: all 3 remaining files (2 JPG + 1 MP4) deleted, camera empty.
+- Deletes now refresh the datalink session before the ~40 s write window ages
+  out (this was why an earlier delete only removed the first few files), and
+  retry a stale/unanswered list by reopening.
+- Safe handle derivation for any still genuinely lacking a marker: fits
+  base+seq×step from ≥3 agreeing known handles, never collides with a known
+  handle, and every derived delete is verified by re-list with abort-if-the-
+  wrong-file-vanishes.
+### Changed — selection & delete UX (user requests)
+- Delete now removes **exactly the selected files** (not an auto-filtered set).
+  On-disk files are selectable; deleting never-transferred files triggers a
+  **second, louder confirmation** listing them.
+- Selection buttons: **All / All video / All photo / Last 24 h / None** —
+  colored to match media kinds (All = amber↔teal blend, video = amber,
+  photo = teal); kind/time buttons are additive, None clears.
+- **Queue shows only the currently selected files** (nothing selected → empty).
+- Disk badge redrawn as a database/HDD cylinder (was a floppy).
+- **Auto-connect on open** (unless boot-started minimized to tray).
+- Connect-time estimate recomputed from real logs (now ~21 s).
+
 ## [0.11.0] - 2026-08-20
 ### Changed — Media grid redesign (user feedback)
 - Tiles are now real checkbox tiles: checkbox top-left is THE selection

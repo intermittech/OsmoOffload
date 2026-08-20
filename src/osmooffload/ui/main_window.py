@@ -160,28 +160,55 @@ class CameraCard(QWidget):
 
 
 def disk_badge(size: int = 18) -> QPixmap:
-    """Small 'saved to disk' glyph: a floppy outline with a check."""
+    """'Saved to disk' glyph: a database/HDD cylinder stack with green rings."""
     pm = QPixmap(size, size)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setBrush(QColor(theme.BG_INSET))
-    p.setPen(QColor(theme.FG_DIM))
-    p.drawRoundedRect(1, 1, size - 2, size - 2, 4, 4)
-    p.drawRect(size // 3, 2, size // 3, size // 4)  # floppy shutter
-    pen = p.pen()
-    pen.setColor(QColor(theme.OK))
-    pen.setWidthF(1.8)
-    p.setPen(pen)
-    p.drawLine(4, size - 8, size // 2 - 1, size - 5)  # check mark
-    p.drawLine(size // 2 - 1, size - 5, size - 4, size // 2 - 2)
+    w = size - 4
+    x = 2
+    ell_h = max(3, size // 4)  # ellipse height for the cylinder look
+    top = 2
+    bottom = size - 2
+    body = QColor("#c9ced4")
+    dark = QColor("#8a9199")
+    ring = QColor(theme.OK)
+
+    # cylinder body
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(body)
+    p.drawRect(x, top + ell_h // 2, w, bottom - top - ell_h)
+    # bottom cap
+    p.setBrush(dark)
+    p.drawEllipse(x, bottom - ell_h, w, ell_h)
+    # separator rings (the colored platter gaps)
+    p.setBrush(ring)
+    third = (bottom - top - ell_h) // 3
+    for i in (1, 2):
+        p.drawEllipse(x, top + ell_h // 2 + i * third - 1, w, ell_h - 1)
+        p.setBrush(body)
+        p.drawEllipse(x, top + ell_h // 2 + i * third - 2, w, ell_h - 1)
+        p.setBrush(ring)
+    # re-draw ring slivers so a crisp colored edge shows under each platter
+    for i in (1, 2):
+        p.drawEllipse(x + 1, top + ell_h // 2 + i * third, w - 2, ell_h - 2)
+        p.setBrush(body)
+        p.drawEllipse(x + 1, top + ell_h // 2 + i * third - 2, w - 2, ell_h - 2)
+        p.setBrush(ring)
+    # top cap
+    p.setBrush(QColor("#e8ebee"))
+    p.drawEllipse(x, top, w, ell_h)
+    p.setPen(QColor(dark))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawEllipse(x, top, w, ell_h)
     p.end()
     return pm
 
 
 class MediaTile(QFrame):
     """One media file: kind-colored border, overlay checkbox (the only
-    selection mechanism), disk badge + grayscale when already on disk."""
+    selection mechanism), disk badge + grayscale when already on disk.
+    On-disk files stay selectable — selection also drives deletion."""
 
     toggled = Signal()
 
@@ -194,6 +221,7 @@ class MediaTile(QFrame):
         upper = name.upper()
         self.kind = "video" if upper.endswith((".MP4", ".MOV", ".LRF")) else "photo"
         self.on_disk = note == "already on disk"
+        self.timestamp = self._parse_ts(name)
 
         self.setObjectName("tile")
         self.setFixedSize(176, 148)
@@ -202,7 +230,7 @@ class MediaTile(QFrame):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip(
             f"{name} · {human_size(size)}"
-            + (" · already on disk" if self.on_disk else "")
+            + (" · already on disk" if self.on_disk else " · NOT yet transferred")
         )
 
         self.thumb = QLabel(self)
@@ -212,7 +240,6 @@ class MediaTile(QFrame):
         self.check = QCheckBox(self)
         self.check.move(12, 12)
         self.check.setChecked(note == "queued")
-        self.check.setEnabled(not self.on_disk)
         self.check.toggled.connect(self._on_toggle)
 
         if self.on_disk:
@@ -220,6 +247,19 @@ class MediaTile(QFrame):
             badge.setPixmap(disk_badge())
             badge.move(self.width() - 30, 12)
             badge.setToolTip("Already on disk")
+
+    @staticmethod
+    def _parse_ts(name: str) -> float | None:
+        import re
+        import time as _time
+
+        m = re.search(r"_(\d{14})_", name)
+        if not m:
+            return None
+        try:
+            return _time.mktime(_time.strptime(m.group(1), "%Y%m%d%H%M%S"))
+        except ValueError:
+            return None
 
         self.label = QLabel(self)
         self.label.setObjectName("tileName")
@@ -233,8 +273,7 @@ class MediaTile(QFrame):
     # -- behavior ------------------------------------------------------------
 
     def mousePressEvent(self, event) -> None:  # click anywhere toggles
-        if self.check.isEnabled():
-            self.check.toggle()
+        self.check.toggle()
         event.accept()
 
     def _on_toggle(self, _checked: bool) -> None:
@@ -251,8 +290,7 @@ class MediaTile(QFrame):
         return self.check.isChecked()
 
     def set_checked(self, on: bool) -> None:
-        if self.check.isEnabled():
-            self.check.setChecked(on)
+        self.check.setChecked(on)
 
     def set_thumb_pixmap(self, src: QPixmap) -> None:
         canvas = QPixmap(self.THUMB)
@@ -273,6 +311,7 @@ class MediaTile(QFrame):
 class MediaTab(QWidget):
     transfer_selected = Signal(list)
     delete_offloaded = Signal()
+    selection_changed = Signal()
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -291,19 +330,24 @@ class MediaTab(QWidget):
 
         bar = QHBoxLayout()
         self.btn_all = QPushButton("All")
+        self.btn_all.setObjectName("selAll")
         self.btn_video = QPushButton("All video")
+        self.btn_video.setObjectName("selVideo")
         self.btn_photo = QPushButton("All photo")
+        self.btn_photo.setObjectName("selPhoto")
+        self.btn_24h = QPushButton("Last 24 h")
         self.btn_none = QPushButton("None")
-        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_none):
+        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_24h, self.btn_none):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_all.clicked.connect(lambda: self._select(lambda t: True))
-        # additive: "All video" then "All photo" builds up the selection
+        # additive: kind/time buttons build up the selection
         self.btn_video.clicked.connect(
             lambda: self._select(lambda t: t.kind == "video", additive=True)
         )
         self.btn_photo.clicked.connect(
             lambda: self._select(lambda t: t.kind == "photo", additive=True)
         )
+        self.btn_24h.clicked.connect(self._select_last_24h)
         self.btn_none.clicked.connect(lambda: self._select(lambda t: False))
 
         self.btn_get = QPushButton("Transfer selected")
@@ -319,7 +363,7 @@ class MediaTab(QWidget):
             "Delete files from the camera that have a verified copy on this PC."
         )
         self.btn_free.clicked.connect(self.delete_offloaded)
-        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_none):
+        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_24h, self.btn_none):
             bar.addWidget(b)
         bar.addStretch(1)
         bar.addWidget(self.btn_free)
@@ -373,6 +417,10 @@ class MediaTab(QWidget):
     def checked_names(self) -> list[str]:
         return [t.name for t in self._tiles.values() if t.checked]
 
+    def unverified_checked_names(self) -> list[str]:
+        """Selected files that have NO copy on disk — deleting these loses them."""
+        return [t.name for t in self._tiles.values() if t.checked and not t.on_disk]
+
     def _select(self, predicate, additive: bool = False) -> None:
         for t in self._tiles.values():
             if predicate(t):
@@ -381,15 +429,27 @@ class MediaTab(QWidget):
                 t.set_checked(False)
         self._update_button()
 
+    def _select_last_24h(self) -> None:
+        import time as _time
+
+        cutoff = _time.time() - 24 * 3600
+        self._select(
+            lambda t: t.timestamp is not None and t.timestamp >= cutoff, additive=True
+        )
+
     def _update_button(self) -> None:
         n = len(self.checked_names())
         self.btn_get.setText(f"Transfer selected ({n})" if n else "Transfer selected")
         self.btn_get.setEnabled(n > 0)
+        self.btn_free.setEnabled(n > 0)
+        self.selection_changed.emit()
 
     def set_busy(self, busy: bool) -> None:
-        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_none, self.btn_free):
+        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_24h, self.btn_none):
             b.setEnabled(not busy)
-        self.btn_get.setEnabled(not busy and bool(self.checked_names()))
+        n = bool(self.checked_names())
+        self.btn_get.setEnabled(not busy and n)
+        self.btn_free.setEnabled(not busy and n)
 
 
 class TablePane(QWidget):
@@ -600,6 +660,8 @@ class MainWindow(QWidget):
         self.media = MediaTab()
         self.media.transfer_selected.connect(self.transfer_selected_requested)
         self.media.delete_offloaded.connect(self.delete_offloaded_requested)
+        self.media.selection_changed.connect(self._sync_queue)
+        self._plan_rows: list[tuple[str, int, str]] = []
         self.queue = TablePane(
             ["File", "Size", "Progress", "Status"],
             "Nothing queued yet.\nRefresh previews what's new; Transfer pulls it in.",
@@ -649,6 +711,15 @@ class MainWindow(QWidget):
             self.camera_list.setCurrentRow(0)
 
     def set_plan(self, rows: list[tuple[str, int, str]]) -> None:
+        self._plan_rows = list(rows)
+        self.media.set_files(rows)
+        self._sync_queue()
+
+    def _sync_queue(self) -> None:
+        """The Queue shows exactly the SELECTED files — nothing selected,
+        nothing listed."""
+        checked = set(self.media.checked_names())
+        rows = [r for r in self._plan_rows if r[0] in checked]
         t = self.queue.table
         t.setRowCount(len(rows))
         self._queue_rows.clear()
@@ -661,12 +732,25 @@ class MainWindow(QWidget):
             t.setCellWidget(r, 2, bar)
             t.setItem(r, 3, QTableWidgetItem(note))
         self.queue.show_rows(bool(rows))
-        self.media.set_files(rows)
+
+    def _ensure_queue_row(self, name: str) -> int:
+        r = self._queue_rows.get(name)
+        if r is not None:
+            return r
+        size = next((s for n, s, _ in self._plan_rows if n == name), 0)
+        t = self.queue.table
+        r = t.rowCount()
+        t.insertRow(r)
+        t.setItem(r, 0, QTableWidgetItem(name))
+        t.setItem(r, 1, QTableWidgetItem(human_size(size)))
+        t.setCellWidget(r, 2, AnimatedBar())
+        t.setItem(r, 3, QTableWidgetItem(""))
+        self._queue_rows[name] = r
+        self.queue.show_rows(True)
+        return r
 
     def update_file_progress(self, name: str, done: int, total: int, status: str) -> None:
-        r = self._queue_rows.get(name)
-        if r is None:
-            return
+        r = self._ensure_queue_row(name)
         bar = self.queue.table.cellWidget(r, 2)
         if isinstance(bar, AnimatedBar) and total:
             bar.animate_to(int(1000 * done / total))

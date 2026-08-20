@@ -60,6 +60,44 @@ def test_history_roundtrip(tmp_path: Path):
     db.close()
 
 
+def test_derive_missing_handles():
+    from types import SimpleNamespace
+
+    from osmooffload.ui.controller import CameraController
+
+    def item(name, handle, storage):
+        return SimpleNamespace(record=SimpleNamespace(
+            name=name, handle=handle, storage=storage))
+
+    ctrl = CameraController.__new__(CameraController)
+
+    # 3 known handles (step 0x40) let us derive the 0007 still -> 0x401001c0
+    plan = [
+        item("DJI_20260820_0004_D.MP4", 0x40100100, 1),
+        item("DJI_20260820_0005_D.MP4", 0x40100140, 1),
+        item("DJI_20260820_0006_D.MP4", 0x40100180, 1),
+        item("DJI_20260820_0007_D.JPG", 0, 1),
+    ]
+    assert ctrl._derive_missing_handles(plan) == {"DJI_20260820_0007_D.JPG": 0x401001C0}
+
+    # only 2 known handles -> not enough to trust a step -> derive nothing
+    plan2 = [
+        item("DJI_0004_D.MP4", 0x40100100, 1),
+        item("DJI_0005_D.MP4", 0x40100140, 1),
+        item("DJI_0006_D.JPG", 0, 1),
+    ]
+    assert ctrl._derive_missing_handles(plan2) == {}
+
+    # 3 handles that are NOT collinear (no single step) -> refuse to fit
+    plan3 = [
+        item("DJI_0004_D.MP4", 0x40100100, 1),
+        item("DJI_0005_D.MP4", 0x40100140, 1),
+        item("DJI_0006_D.MP4", 0x40100199, 1),  # breaks the step
+        item("DJI_0007_D.JPG", 0, 1),
+    ]
+    assert ctrl._derive_missing_handles(plan3) == {}
+
+
 def test_delete_payload_matches_capture():
     from osmooffload.camera.session import CameraDatalink
 

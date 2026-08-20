@@ -84,6 +84,16 @@ class OsmoApp:
             self._wire_controller()
             self._maybe_wizard()
             QTimer.singleShot(6000, self._check_update_quiet)
+            # opening the app interactively = the user wants to see the camera:
+            # connect right away (not when boot-started minimized to tray)
+            if not (self.settings.get("tray_mode") and self.settings.get("start_minimized")):
+                if self.state.get("cameras"):
+                    QTimer.singleShot(900, self._auto_open_refresh)
+
+    def _auto_open_refresh(self) -> None:
+        if self.controller and not self.controller.busy:
+            self.window.status_line.setText("Connecting to the camera…")
+            self.controller.refresh()
 
     # -- controller wiring ---------------------------------------------------
 
@@ -273,18 +283,44 @@ class OsmoApp:
     def _confirm_delete(self) -> None:
         from PySide6.QtWidgets import QMessageBox
 
+        names = self.window.media.checked_names()
+        if not names:
+            return
+        unverified = self.window.media.unverified_checked_names()
+
         box = QMessageBox(self.window)
         box.setWindowTitle("Delete files on camera")
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setText("Delete files from the camera that already have a verified copy on this PC?")
-        box.setInformativeText(
-            "Only files whose transfer was completed and size-verified are touched. "
-            "This cannot be undone on the camera."
-        )
+        box.setText(f"Delete the {len(names)} selected file(s) from the camera?")
+        box.setInformativeText("This cannot be undone on the camera.")
         box.setStandardButtons(QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes)
         box.setDefaultButton(QMessageBox.StandardButton.Cancel)
-        if box.exec() == QMessageBox.StandardButton.Yes and self.controller:
-            self.controller.delete_offloaded()
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+
+        if unverified:
+            # second, louder gate: these files exist NOWHERE else
+            box2 = QMessageBox(self.window)
+            box2.setWindowTitle("Files not yet transferred!")
+            box2.setIcon(QMessageBox.Icon.Critical)
+            box2.setText(
+                f"{len(unverified)} of the selected file(s) have NEVER been "
+                "transferred to this PC."
+            )
+            listing = "\n".join(unverified[:8]) + ("\n…" if len(unverified) > 8 else "")
+            box2.setInformativeText(
+                f"Deleting them destroys the only copy:\n\n{listing}\n\n"
+                "Delete them anyway?"
+            )
+            box2.setStandardButtons(
+                QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes
+            )
+            box2.setDefaultButton(QMessageBox.StandardButton.Cancel)
+            if box2.exec() != QMessageBox.StandardButton.Yes:
+                return
+
+        if self.controller:
+            self.controller.delete_selected(names)
 
     def _on_session_done(self, summary: dict) -> None:
         self._reload_history()

@@ -142,19 +142,26 @@ def decode(buf: bytes) -> list[MediaRecord]:
                 break
             t += 1
 
+        # Anchor on the constant `19 06` pair common to BOTH record shapes —
+        # videos write `03 ff 19 06`, stills a shorter `[ff|fe] 19 06`. The
+        # handle is u32-LE @ (19 06 − 10) and the byte size u32-LE @ (19 06 − 14)
+        # for both (ground-truthed on a Pocket 4 Pro: seq 5/6/7 -> 0x40100140/
+        # 180/1c0, step 0x40, with matching file sizes). Require the fe/ff
+        # prefix so a stray `19 06` in path/data can't be mistaken for a marker.
         handle = size = 0
         star = False
-        m = buf.find(VIDEO_MARKER, lo, hi)
-        if m != -1:
-            head = m - 8
-            if head >= 0:
-                handle = struct.unpack_from("<I", buf, head)[0]
-            if head - 4 >= 0:
-                size = struct.unpack_from("<I", buf, head - 4)[0]
-            # star flag @ marker(19 06) + 9 — only a real 0/1 flag on some bodies
-            star_off = m + 2 + 9
-            if star_off < len(buf) and buf[star_off] in (0, 1):
-                star = buf[star_off] == 1
+        p = lo
+        while p < hi - 1:
+            if buf[p] == 0x19 and buf[p + 1] == 0x06 and p >= 1 and buf[p - 1] in (0xFE, 0xFF):
+                if p - 10 >= 0:
+                    handle = struct.unpack_from("<I", buf, p - 10)[0]
+                if p - 14 >= 0:
+                    size = struct.unpack_from("<I", buf, p - 14)[0]
+                star_off = p + 9
+                if star_off < len(buf) and buf[star_off] in (0, 1):
+                    star = buf[star_off] == 1
+                break
+            p += 1
 
         name = f"{base}.{ext}" if ext else base
         files.append(

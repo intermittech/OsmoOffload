@@ -158,8 +158,10 @@ class CameraController(QObject):
     def transfer_selected(self, names: list) -> None:
         self._submit(self._session(transfer=True, selected=set(names)))
 
-    def delete_offloaded(self) -> None:
-        self._submit(self._delete_session())
+    def delete_selected(self, names: list) -> None:
+        """Delete exactly these files from the camera. The UI has already
+        confirmed (twice, for never-transferred files)."""
+        self._submit(self._delete_session(set(names)))
 
     def usb_ingest(self) -> None:
         self._submit(self._usb_session())
@@ -483,9 +485,9 @@ class CameraController(QObject):
                                "failures": [], "empty_camera": True, "new": 0, "total": 0}
                     self._finalize(session_id, action, cam_folder, cfg.base_dir,
                                    rep, summary, outcome="empty")
-                    self.session_done.emit(summary)
                     self._hold_warm(link, creds, target, dl)
                     self.state_changed.emit("connected", "Camera is empty — nothing to transfer")
+                    self.session_done.emit(summary)
                     return
                 raise conn.ConnectError("Connected, but the camera never answered the media list.")
 
@@ -523,7 +525,6 @@ class CameraController(QObject):
                 outcome = "ok"
                 self._finalize(session_id, "refresh", cam_folder, cfg.base_dir,
                                rep, summary, outcome)
-                self.session_done.emit(summary)
                 http.close()
                 self._hold_warm(link, creds, target, dl)
                 self.state_changed.emit(
@@ -531,6 +532,7 @@ class CameraController(QObject):
                     f"{len(todo)} new of {len(plan)} on camera — connection held"
                     if not transfer else "Nothing new to transfer — connection held",
                 )
+                self.session_done.emit(summary)
                 return
 
             self.state_changed.emit("transferring", f"{len(todo)} files…")
@@ -582,13 +584,13 @@ class CameraController(QObject):
             http.close()
             if not result.failures:
                 self._auto_backoff_until = 0.0
-            self.session_done.emit(summary)
             self._hold_warm(link, creds, target, dl)
             self.state_changed.emit(
                 "connected",
                 f"Done: {result.done_files}/{result.total_files} files "
                 f"({result.done_bytes / 1e6:.0f} MB, {rate:.0f} MB/s) — connection held",
             )
+            self.session_done.emit(summary)
         except BaseException:
             await self._drop_warm_link(link, dl)
             raise
@@ -610,7 +612,7 @@ class CameraController(QObject):
 
     # -- delete session ------------------------------------------------------
 
-    async def _delete_session(self) -> None:
+    async def _delete_session(self, names: set) -> None:
         from ..core.report import ReportFile, SessionReport
 
         state = config.load_state()
@@ -630,7 +632,7 @@ class CameraController(QObject):
             self.state_changed.emit("almost", "Opening data session…")
             identifier = config.get_identifier(state)
             summary, deleted_files, records_after, cam_status = await asyncio.to_thread(
-                self._delete_blocking, identifier, cam_folder
+                self._delete_blocking, identifier, cam_folder, names
             )
             self._emit_status(cam_status)
             secs = time.monotonic() - t0
@@ -656,15 +658,15 @@ class CameraController(QObject):
                 off = Offloader(cfg, self.db, http)
                 await asyncio.to_thread(self._emit_fresh_plan, off, records_after)
                 http.close()
-            self.session_done.emit(summary)
             self._hold_warm(link, creds, target)
             self.state_changed.emit(
                 "connected",
                 (f"Freed {summary['freed'] / 1e6:.0f} MB — deleted "
                  f"{summary['deleted']}/{summary['candidates']} file(s) — connection held")
                 if summary["candidates"]
-                else "Nothing on the camera is safe to delete yet — connection held",
+                else "No selected files were deletable — connection held",
             )
+            self.session_done.emit(summary)
         except BaseException:
             await self._drop_warm_link(link)
             raise
@@ -700,71 +702,192 @@ class CameraController(QObject):
             time.sleep(0.8)
         return [], last_status, False, None
 
-    def _delete_blocking(self, identifier: str, cam_folder: str):
-        """Fresh datalink session: list, delete verified-offloaded files one at
-        a time, re-list to confirm. Returns (summary, deleted_files,
-        records_after|None, status)."""
-        summary = {"mode": "delete", "candidates": 0, "deleted": 0, "freed": 0, "failures": []}
-        deleted_files: list[tuple] = []
-        for attempt, (port, poke) in enumerate([(9004, True), (9004, True)], 1):
-            dl = CameraDatalink(conn.CAMERA_IP, port=port, tcp_poke=poke, identifier=identifier)
-            try:
-                if not dl.open():
-                    continue
+    # Writes stop being answered on a session older than ~40-70 s (hardware
+    # finding) — refresh the datalink before that window closes.
+    DELETE_SESSION_MAX_AGE_S = 28.0
+
+    @staticmethod
+    def _seq_of(name: str) -> int | None:
+        import re
+
+        m = re.search(r"_(\d{4})(?:_D)?[._]", name)
+        return int(m.group(1)) if m else None
+
+    def _derive_missing_handles(self, plan) -> dict:
+        """Fit handle = base + seq*step per store from the records that DO
+        expose a handle, then derive handles for records that don't (some
+        stills). Returns {name: handle}. Only fits when >=2 known handles in a
+        store agree on a step and the fit reproduces EVERY known handle
+        exactly — so a bad guess can't be produced silently. Each derived
+        handle is still verified by re-list before the next delete (caller),
+        so this is a candidate, never a trusted value."""
+        from collections import defaultdict
+
+        by_store: dict = defaultdict(list)
+        for p in plan:
+            r = p.record
+            s = self._seq_of(r.name)
+            if r.handle and s is not None:
+                by_store[r.storage].append((s, r.handle))
+
+        fits: dict = {}
+        for store, pairs in by_store.items():
+            pairs = sorted(set(pairs))
+            # >=3 collinear points is a real signal; 2 points always "fit" a
+            # line, so requiring 3 keeps a wrong step from being manufactured
+            if len(pairs) < 3:
+                continue
+            (s0, h0), (s1, h1) = pairs[0], pairs[-1]
+            if s1 == s0:
+                continue
+            step, rem = divmod(h1 - h0, s1 - s0)
+            if rem != 0 or step <= 0:
+                continue
+            base = h0 - s0 * step
+            if all(base + s * step == h for s, h in pairs):
+                fits[store] = (base, step)
+
+        known_handles = {p.record.handle for p in plan if p.record.handle}
+        out: dict = {}
+        for p in plan:
+            r = p.record
+            if r.handle:
+                continue
+            s = self._seq_of(r.name)
+            fit = fits.get(r.storage)
+            if s is not None and fit:
+                h = fit[0] + s * fit[1]
+                if h not in known_handles:  # never collide with a known file
+                    out[r.name] = h
+        return out
+
+    def _fresh_delete_dl(self, identifier: str):
+        for _ in (1, 2):
+            dl = CameraDatalink(conn.CAMERA_IP, port=9004, tcp_poke=True,
+                                identifier=identifier)
+            if dl.open():
                 dl.register()
                 dl.enter_playback()
-                records, _ = dl.query_newest_page()
-                if not records:
-                    if attempt == 1:
-                        continue
-                    summary["failures"].append("camera returned no media list")
-                    return summary, deleted_files, None, dl.status
+                return dl, time.monotonic()
+            dl.close()
+            time.sleep(0.8)
+        return None, 0.0
 
-                http = CameraHttp(conn.CAMERA_IP)
-                cfg = self._make_cfg(cam_folder)
-                plan = Offloader(cfg, self.db, http).plan(records)
-                http.close()
+    def _delete_blocking(self, identifier: str, cam_folder: str, names: set):
+        """Fresh datalink session: list, delete the SELECTED files one at a
+        time (re-opening the session before the write window ages out), then
+        re-list to confirm. Returns (summary, deleted_files, records_after,
+        status)."""
+        summary = {"mode": "delete", "candidates": 0, "deleted": 0, "freed": 0, "failures": []}
+        deleted_files: list[tuple] = []
+        dl, opened_at = self._fresh_delete_dl(identifier)
+        if dl is None:
+            summary["failures"].append("could not open a data session")
+            return summary, deleted_files, None, None
+        try:
+            from ..camera import manifest as mf
 
-                handle_counts: dict[int, int] = {}
-                for p in plan:
+            records = []
+            for attempt in (1, 2, 3):
+                records, raw = dl.query_newest_page()
+                if records or mf.list_answered(raw):
+                    break
+                # stale session (camera still holding the previous one):
+                # reopen fresh and try again
+                log.warning("delete: list unanswered (attempt %d) — reopening", attempt)
+                dl.close()
+                time.sleep(0.8)
+                dl, opened_at = self._fresh_delete_dl(identifier)
+                if dl is None:
+                    summary["failures"].append("could not open a data session")
+                    return summary, deleted_files, None, None
+            if not records:
+                summary["failures"].append("camera returned no media list")
+                return summary, deleted_files, None, dl.status
+
+            http = CameraHttp(conn.CAMERA_IP)
+            cfg = self._make_cfg(cam_folder)
+            plan = Offloader(cfg, self.db, http).plan(records)
+            http.close()
+
+            handle_counts: dict[int, int] = {}
+            for p in plan:
+                if p.record.handle:
                     handle_counts[p.record.handle] = handle_counts.get(p.record.handle, 0) + 1
-                todo = []
-                for p in plan:
-                    rec = p.record
-                    if not rec.handle or handle_counts[rec.handle] != 1:
-                        continue
-                    if not p.size or not self.db.deletable(cam_folder, rec.media_path, p.size):
-                        continue
-                    todo.append(p)
-                summary["candidates"] = len(todo)
-                if not todo:
-                    return summary, deleted_files, records, dl.status
+            derived = self._derive_missing_handles(plan)
+            todo = []  # (plan_item, handle, is_derived)
+            for p in plan:
+                rec = p.record
+                if rec.name not in names:
+                    continue
+                if rec.handle and handle_counts[rec.handle] == 1:
+                    todo.append((p, rec.handle, False))
+                elif rec.name in derived:
+                    todo.append((p, derived[rec.name], True))
+                else:
+                    summary["failures"].append(f"{rec.name}: no safe delete handle")
+            summary["candidates"] = len(todo)
+            if not todo:
+                return summary, deleted_files, records, dl.status
 
-                for p in todo:
-                    status = dl.delete_files([p.record.handle])
+            # direct handles first, derived (verify-each) last
+            todo.sort(key=lambda t: t[2])
+            record_ok: list = []
+            aborted = False
+            for p, handle, is_derived in todo:
+                if aborted:
+                    summary["failures"].append(f"{p.record.name}: skipped (aborted)")
+                    continue
+                if time.monotonic() - opened_at > self.DELETE_SESSION_MAX_AGE_S:
+                    log.info("delete session aged %.0fs — refreshing before next write",
+                             time.monotonic() - opened_at)
+                    dl.close()
+                    dl, opened_at = self._fresh_delete_dl(identifier)
+                    if dl is None:
+                        summary["failures"].append("session refresh failed mid-delete")
+                        return summary, deleted_files, None, None
+                if is_derived:
+                    # a derived handle is a calculated guess: verify by re-list
+                    # BEFORE touching the next file; abort all on any surprise
+                    before = {r.media_path for r in dl.query_newest_page()[0]}
+                    dl.delete_files([handle])
+                    after = {r.media_path for r in dl.query_newest_page()[0]}
+                    gone = before - after
+                    if gone == {p.record.media_path}:
+                        record_ok.append(p)
+                    elif not gone:
+                        summary["failures"].append(f"{p.record.name}: derived handle rejected")
+                    else:
+                        summary["failures"].append(
+                            f"ABORT: derived handle removed {sorted(gone)} instead of "
+                            f"{p.record.media_path} — stopping all deletes"
+                        )
+                        log.error("derived-handle delete removed unexpected file(s): %s", gone)
+                        aborted = True
+                else:
+                    status = dl.delete_files([handle])
                     if status not in (None, 0x0000):
                         summary["failures"].append(f"{p.record.name}: status 0x{status:04x}")
 
-                records_after, _ = dl.query_newest_page()
-                remaining = {r.media_path for r in records_after}
-                for p in todo:
-                    if p.record.media_path in remaining:
-                        if not any(p.record.name in f for f in summary["failures"]):
-                            summary["failures"].append(f"{p.record.name}: still on camera")
-                    else:
-                        self.db.mark_deleted_from_camera(cam_folder, p.record.media_path)
-                        summary["deleted"] += 1
-                        summary["freed"] += p.size or 0
-                        deleted_files.append((
-                            p.record.name, p.size or 0,
-                            {0: "sd", 1: "internal", None: None}.get(p.record.storage),
-                            "video" if p.record.name.upper().endswith((".MP4", ".MOV")) else "photo",
-                        ))
-                return summary, deleted_files, records_after, dl.status
-            finally:
+            records_after, _ = dl.query_newest_page()
+            remaining = {r.media_path for r in records_after}
+            for p, _h, is_derived in todo:
+                if p.record.media_path in remaining:
+                    if not any(p.record.name in f for f in summary["failures"]):
+                        summary["failures"].append(f"{p.record.name}: still on camera")
+                else:
+                    self.db.mark_deleted_from_camera(cam_folder, p.record.media_path)
+                    summary["deleted"] += 1
+                    summary["freed"] += p.size or 0
+                    deleted_files.append((
+                        p.record.name, p.size or 0,
+                        {0: "sd", 1: "internal", None: None}.get(p.record.storage),
+                        "video" if p.record.name.upper().endswith((".MP4", ".MOV")) else "photo",
+                    ))
+            return summary, deleted_files, records_after, dl.status
+        finally:
+            if dl is not None:
                 dl.close()
-        summary["failures"].append("could not open a data session")
-        return summary, deleted_files, None, None
 
     # -- USB session ---------------------------------------------------------
 
