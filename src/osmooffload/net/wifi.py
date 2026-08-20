@@ -3,6 +3,9 @@
 The camera AP is internet-less; on an Ethernet-primary PC, internet routing is
 untouched. All calls are async (subprocess) so the BLE keepalive keeps beating
 while we associate.
+
+Every subprocess is spawned with CREATE_NO_WINDOW so no console flashes on
+screen — netsh/ipconfig otherwise pop a black window per call.
 """
 
 from __future__ import annotations
@@ -10,10 +13,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import subprocess
 import tempfile
 from pathlib import Path
 
 log = logging.getLogger("osmo.wifi")
+
+CREATE_NO_WINDOW = 0x08000000  # keeps netsh/ipconfig off-screen
 
 PROFILE_XML = """<?xml version="1.0"?>
 <WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
@@ -37,15 +43,20 @@ PROFILE_XML = """<?xml version="1.0"?>
 """
 
 
-async def _netsh(*args: str) -> tuple[int, str]:
+async def _run(*args: str) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(
-        "netsh", *args,
+        *args,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        creationflags=CREATE_NO_WINDOW,
     )
     out, _ = await proc.communicate()
-    text = out.decode("mbcs", errors="replace")
-    log.debug("netsh %s -> rc=%s %s", " ".join(args), proc.returncode, text.strip()[:400])
-    return proc.returncode or 0, text
+    return proc.returncode or 0, out.decode("mbcs", errors="replace")
+
+
+async def _netsh(*args: str) -> tuple[int, str]:
+    rc, text = await _run("netsh", *args)
+    log.debug("netsh %s -> rc=%s %s", " ".join(args), rc, text.strip()[:400])
+    return rc, text
 
 
 async def interface_status(iface: str | None = None) -> dict[str, str]:
@@ -69,6 +80,14 @@ async def current_profile(iface: str | None = None) -> str | None:
     return None
 
 
+async def is_associated(ssid: str, iface: str | None = None) -> bool:
+    st = await interface_status(iface)
+    return (
+        st.get("state", "").lower().startswith("connected")
+        and st.get("ssid", "").lower() == ssid.lower()
+    )
+
+
 async def network_visible(ssid: str) -> bool:
     _, text = await _netsh("wlan", "show", "networks")
     return any(
@@ -85,9 +104,7 @@ async def ensure_profile(ssid: str, password: str) -> None:
         f.write(xml)
         path = Path(f.name)
     try:
-        rc, out = await _netsh(
-            "wlan", "add", "profile", f"filename={path}", "user=current"
-        )
+        rc, out = await _netsh("wlan", "add", "profile", f"filename={path}", "user=current")
         if rc != 0:
             raise RuntimeError(f"netsh add profile failed: {out.strip()}")
     finally:
@@ -114,7 +131,7 @@ async def connect(ssid: str, timeout: float = 25.0, iface: str | None = None) ->
                 st.get("signal"), st.get("receive rate (mbps)"), st.get("transmit rate (mbps)"),
             )
             return st
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(0.6)
     raise TimeoutError(f"association with {ssid} did not complete in {timeout:.0f}s")
 
 
@@ -128,13 +145,13 @@ async def disconnect(iface: str | None = None) -> None:
 def rejoin_sync(ssid: str, timeout: float = 30.0) -> bool:
     """Blocking WiFi rejoin for worker threads (mid-transfer AP blip recovery).
     The profile already exists from the initial join."""
-    import subprocess
     import time as _time
 
     try:
         subprocess.run(
             ["netsh", "wlan", "connect", f"name={ssid}"],
             capture_output=True, timeout=10, check=False,
+            creationflags=CREATE_NO_WINDOW,
         )
     except Exception as e:
         log.debug("rejoin connect failed: %s", e)
@@ -145,6 +162,7 @@ def rejoin_sync(ssid: str, timeout: float = 30.0) -> bool:
             out = subprocess.run(
                 ["netsh", "wlan", "show", "interfaces"],
                 capture_output=True, timeout=10, check=False,
+                creationflags=CREATE_NO_WINDOW,
             ).stdout.decode("mbcs", "replace")
             if "connected" in out.lower() and ssid.lower() in out.lower():
                 log.info("rejoined %s after AP blip", ssid)
@@ -159,12 +177,9 @@ async def wait_for_ip(prefix: str = "192.168.2.", timeout: float = 20.0) -> str:
     """Wait for a DHCP address in the camera's subnet on any interface."""
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
-        proc = await asyncio.create_subprocess_exec(
-            "ipconfig", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
-        )
-        out, _ = await proc.communicate()
-        m = re.search(rf"IPv4[^:]*:\s*({re.escape(prefix)}\d+)", out.decode("mbcs", "replace"))
+        _, text = await _run("ipconfig")
+        m = re.search(rf"IPv4[^:]*:\s*({re.escape(prefix)}\d+)", text)
         if m:
             return m.group(1)
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(0.8)
     raise TimeoutError(f"no {prefix}x address within {timeout:.0f}s")

@@ -143,7 +143,7 @@ class MediaTab(QWidget):
         self.btn_get.clicked.connect(
             lambda: self.transfer_selected.emit(self.checked_names())
         )
-        self.btn_free = QPushButton("Free up camera…")
+        self.btn_free = QPushButton("Delete files on camera…")
         self.btn_free.setObjectName("danger")
         self.btn_free.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_free.setToolTip(
@@ -223,8 +223,22 @@ class MediaTab(QWidget):
 
     def set_thumb(self, name: str, path: str) -> None:
         item = self._items.get(name)
-        if item:
-            item.setIcon(QIcon(path))
+        if not item:
+            return
+        # letterbox onto the exact icon canvas so every tile fits its box
+        size = self.grid.iconSize()
+        src = QPixmap(path)
+        if src.isNull():
+            return
+        canvas = QPixmap(size)
+        canvas.fill(QColor(theme.BG_INSET))
+        scaled = src.scaled(size, Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation)
+        p = QPainter(canvas)
+        p.drawPixmap((size.width() - scaled.width()) // 2,
+                     (size.height() - scaled.height()) // 2, scaled)
+        p.end()
+        item.setIcon(QIcon(canvas))
 
     def checked_names(self) -> list[str]:
         return [
@@ -461,12 +475,13 @@ class MainWindow(QWidget):
             "Nothing queued yet.\nRefresh previews what's new; Transfer pulls it in.",
         )
         self.history = TablePane(
-            ["When", "Original name", "Saved as", "Size", "Verified", "Log"],
-            "No transfers recorded yet.",
+            ["When", "Action", "Files", "Data", "Speed", "Result", "Report"],
+            "No sessions recorded yet.",
         )
-        self.history.table.horizontalHeader().setSectionResizeMode(
-            5, QHeaderView.ResizeMode.ResizeToContents
-        )
+        for col in (2, 3, 4, 5, 6):
+            self.history.table.horizontalHeader().setSectionResizeMode(
+                col, QHeaderView.ResizeMode.ResizeToContents
+            )
         self.settings_tab = SettingsTab(settings)
         self.settings_tab.changed.connect(self.settings_saved)
         self.tabs.addTab(self.media, "Media")
@@ -530,24 +545,26 @@ class MainWindow(QWidget):
         self.queue.table.setItem(r, 3, QTableWidgetItem(status))
 
     def set_history_rows(self, rows: list[tuple]) -> None:
-        """rows: (when, original, saved_as, size, verified, dest_path_tooltip, log_path)"""
+        """One row per SESSION: (when, action, files, data, speed, result,
+        open_path|None, tooltip). The button opens the session report (which
+        embeds the debug log in a fold)."""
         import os
 
         t = self.history.table
         t.setRowCount(len(rows))
-        for r, (when, orig, saved_as, size, verified, dest_tip, log_path) in enumerate(rows):
-            for c, val in enumerate((when, orig, saved_as, size, verified)):
+        for r, (when, action, files, data, speed, result, open_path, tip) in enumerate(rows):
+            for c, val in enumerate((when, action, files, data, speed, result)):
                 item = QTableWidgetItem(val)
-                if c == 2 and dest_tip:
-                    item.setToolTip(dest_tip)
+                if tip:
+                    item.setToolTip(tip)
                 t.setItem(r, c, item)
-            if log_path and os.path.exists(log_path):
-                btn = QPushButton("Open log")
+            if open_path and os.path.exists(open_path):
+                btn = QPushButton("Open report")
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.setToolTip(log_path)
+                btn.setToolTip(open_path)
                 btn.setStyleSheet("padding: 3px 10px; font-size: 9pt;")
-                btn.clicked.connect(lambda _=False, p=log_path: os.startfile(p))
-                t.setCellWidget(r, 5, btn)
+                btn.clicked.connect(lambda _=False, p=open_path: os.startfile(p))
+                t.setCellWidget(r, 6, btn)
             else:
-                t.setItem(r, 5, QTableWidgetItem("—"))
+                t.setItem(r, 6, QTableWidgetItem("—"))
         self.history.show_rows(bool(rows))

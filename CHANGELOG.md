@@ -5,6 +5,33 @@ v1.0.0 is declared by the project owner.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-20
+### Changed — UX polish pass (all user-requested)
+- **No more console-window flashes**: every netsh/ipconfig subprocess now
+  spawns with CREATE_NO_WINDOW — connecting/transferring/deleting is silent.
+- **History is one row per session** (transfer / refresh / delete / USB), each
+  with When / Action / Files / Data / Speed / Result and an **Open report**
+  button. The report is a formatted HTML page — summary, per-file table with
+  original → saved-as names, destination folders, sizes, durations, speeds,
+  hashes — with the full DEBUG log folded into a collapsed <details> at the
+  bottom (hidden by default). Refresh and delete get reports too.
+- **Stay connected after an action**: the camera connection is held warm for
+  2 minutes (BLE + WiFi + a live datalink keepalive), so a follow-up refresh /
+  transfer / delete skips the whole reconnect. Measured: **cold 56–85 s →
+  warm 5 s** (~11–16×). Battery/storage keep updating live during the hold.
+- **Faster cold connect**: early-exit BLE scan (returns the instant the advert
+  is heard), known-camera path skips the 10004 port probe, and the AP-wake
+  nudge fires sooner. A rolling average of real connect times drives a
+  **countdown** ("usually ~30s — about 12s left") shown while connecting.
+- **"Almost connected"** state once battery data arrives mid-connect.
+- Transfer **speed shown in the pill** ("transferring · 62 MB/s").
+- **Auto-refresh after transfer/delete** so the grid never shows stale state.
+- Thumbnails letterboxed to fit their tiles; "Free up camera" → **"Delete
+  files on camera…"**; wizard "Finish & pair" / "Bluetooth & WiFi" (&& typo).
+### Fixed
+- HTTP 416 on resume: a stale/complete `.part` past EOF is now finalized (or
+  discarded and restarted) instead of failing the file.
+
 ## [0.9.1] - 2026-08-20
 ### Fixed
 - All user-facing paths now display Windows-style backslashes: defaults,

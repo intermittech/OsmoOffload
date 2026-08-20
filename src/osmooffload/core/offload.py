@@ -115,13 +115,18 @@ class Offloader:
         items: list[PlanItem],
         progress: Callable[[SessionProgress], None] | None = None,
         cancelled: Callable[[], bool] | None = None,
+        session_id: int | None = None,
     ) -> SessionProgress:
         todo = [i for i in items if not i.skipped]
         prog = SessionProgress(
             total_files=len(todo),
             total_bytes=sum(i.size or 0 for i in todo),
         )
-        session_id = self.db.start_session(self.cfg.camera_folder, log_path=self.cfg.log_path)
+        own_session = session_id is None
+        if own_session:
+            session_id = self.db.start_session(
+                self.cfg.camera_folder, log_path=self.cfg.log_path
+            )
         prog.session_id = session_id
         try:
             for item in todo:
@@ -167,6 +172,8 @@ class Offloader:
                             "storage": {0: "sd", 1: "internal", None: None}.get(rec.storage),
                             "kind": parsed.kind,
                             "verified": verified,
+                            "speed_mbs": (result.size / result.seconds / 1e6)
+                            if result.seconds else None,
                         }
                     )
                     rate = result.size / result.seconds / 1e6 if result.seconds else 0
@@ -182,6 +189,7 @@ class Offloader:
                 if progress:
                     progress(prog)
         finally:
-            self.db.finish_session(session_id, prog.done_files, prog.done_bytes,
-                                   note="; ".join(prog.failures[:5]))
+            if own_session:
+                self.db.finish_session(session_id, prog.done_files, prog.done_bytes,
+                                       note="; ".join(prog.failures[:5]))
         return prog

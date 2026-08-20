@@ -104,7 +104,9 @@ class OsmoApp:
         self.act_transfer.triggered.connect(c.transfer)
 
         c.state_changed.connect(self._on_state)
+        c.connect_started.connect(self._on_connect_started)
         c.camera_seen.connect(self._on_camera_seen)
+        self.qt.aboutToQuit.connect(c.shutdown)
         c.auto_started.connect(
             lambda: self._toast("Osmo Offload", "Camera detected — transferring new files.")
         )
@@ -130,12 +132,17 @@ class OsmoApp:
     def _on_state(self, state: str, detail: str) -> None:
         w = self.window
         pill_text = {
-            "idle": "idle", "connecting": "connecting…", "connected": "connected",
+            "idle": "idle", "connecting": "connecting…",
+            "almost": "almost connected", "connected": "connected",
             "transferring": "transferring", "error": "error",
         }.get(state, state)
-        w.card.pill.set_state(state, pill_text)
-        w.status_line.setText(detail)
-        busy = state in ("connecting", "transferring")
+        pill_state = "connecting" if state == "almost" else state
+        w.card.pill.set_state(pill_state, pill_text)
+        self._conn_phase = detail if state in ("connecting", "almost") else ""
+        if state not in ("connecting", "almost"):
+            self._stop_countdown()
+            w.status_line.setText(detail)
+        busy = state in ("connecting", "almost", "transferring")
         w.card.set_busy(busy, transferring=(state == "transferring"))
         w.media.set_busy(busy)
         # camera list dot: in-range while a session is live
@@ -145,6 +152,36 @@ class OsmoApp:
               state in ("connecting", "connected", "transferring"))
              for addr, cam in saved.items()]
         )
+
+    # -- connecting countdown ------------------------------------------------
+
+    def _on_connect_started(self, estimate_s: float) -> None:
+        import time as _time
+
+        self._conn_est = max(estimate_s, 3.0)
+        self._conn_t0 = _time.monotonic()
+        if not hasattr(self, "_conn_timer"):
+            self._conn_timer = QTimer()
+            self._conn_timer.setInterval(1000)
+            self._conn_timer.timeout.connect(self._tick_countdown)
+        self._conn_timer.start()
+        self._tick_countdown()
+
+    def _tick_countdown(self) -> None:
+        import time as _time
+
+        elapsed = _time.monotonic() - getattr(self, "_conn_t0", _time.monotonic())
+        remaining = self._conn_est - elapsed
+        phase = getattr(self, "_conn_phase", "") or "Connecting…"
+        if remaining > 0:
+            text = f"{phase}  ·  usually ~{self._conn_est:.0f}s — about {remaining:.0f}s left"
+        else:
+            text = f"{phase}  ·  taking a little longer than usual ({elapsed:.0f}s)"
+        self.window.status_line.setText(text)
+
+    def _stop_countdown(self) -> None:
+        if hasattr(self, "_conn_timer"):
+            self._conn_timer.stop()
 
     def _on_camera_seen(self, present: bool) -> None:
         saved = self.state.get("cameras", {})
@@ -168,6 +205,7 @@ class OsmoApp:
     def _on_file_progress(self, name: str, done: int, total: int,
                           fdone: int, ftotal: int, rate: float) -> None:
         self.window.update_file_progress(name, done, total, "downloading")
+        self.window.card.pill.set_state("transferring", f"transferring · {rate:.0f} MB/s")
         pct = 100 * done / total if total else 0
         self.window.status_line.setText(
             f"{name} — {pct:.0f}% · file {fdone + 1}/{ftotal} · {rate:.1f} MB/s"
@@ -236,7 +274,7 @@ class OsmoApp:
         from PySide6.QtWidgets import QMessageBox
 
         box = QMessageBox(self.window)
-        box.setWindowTitle("Free up camera")
+        box.setWindowTitle("Delete files on camera")
         box.setIcon(QMessageBox.Icon.Warning)
         box.setText("Delete files from the camera that already have a verified copy on this PC?")
         box.setInformativeText(
@@ -287,13 +325,32 @@ class OsmoApp:
     def _reload_history(self) -> None:
         if not self.controller:
             return
+        action_labels = {"transfer": "Transfer", "refresh": "Refresh",
+                         "delete": "Delete", "usb": "USB ingest"}
+        outcome_labels = {"ok": "✔ ok", "partial": "△ partial",
+                          "failed": "✘ failed", "empty": "— nothing to do"}
         rows = []
-        for t in self.controller.db.recent(limit=500):
-            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(t.finished_at)) if t.finished_at else "…"
-            saved_as = t.dest_name or (t.dest_path.replace("\\", "/").rsplit("/", 1)[-1])
-            rows.append((when, t.name, saved_as, human_size(t.size),
-                         "yes" if t.verified else ("no" if t.status == "done" else t.status),
-                         t.dest_path, t.log_path))
+        for s in self.controller.db.recent_sessions(limit=300):
+            when = time.strftime(
+                "%Y-%m-%d %H:%M",
+                time.localtime(s.finished_at or s.started_at),
+            )
+            speed = f"{s.rate_mbs:.0f} MB/s" if s.rate_mbs else "—"
+            result = outcome_labels.get(s.outcome or "", s.outcome or "…")
+            if s.note:
+                result_tip = s.note
+            else:
+                result_tip = ""
+            rows.append((
+                when,
+                action_labels.get(s.action, s.action),
+                str(s.files_done) if s.files_done else "—",
+                human_size(s.bytes_done) if s.bytes_done else "—",
+                speed,
+                result,
+                s.report_path or s.log_path,
+                result_tip,
+            ))
         self.window.set_history_rows(rows)
 
     def _toast(self, title: str, msg: str, error: bool = False) -> None:
@@ -351,10 +408,10 @@ class OsmoApp:
         w.update_file_progress("DJI_20260820143000_0002_D.MP4", 1350000000, 1934567890, "downloading")
         w.set_history_rows(
             [
-                ("2026-08-20 13:28", "DJI_20260820125927_0001_D.MP4",
-                 "2026-08-20_125927_P4P_0001.mp4", "252.54 MB", "yes",
-                 r"D:\DJI-Offload\OsmoPocket4P-88A6\2026-08-20\video\2026-08-20_125927_P4P_0001.mp4",
-                 None),
+                ("2026-08-20 13:28", "Transfer", "5", "6.12 GB", "62 MB/s", "✔ ok",
+                 None, ""),
+                ("2026-08-20 13:12", "Refresh", "—", "—", "—", "✔ ok", None, ""),
+                ("2026-08-20 12:55", "Delete", "2", "1.75 GB", "—", "✔ ok", None, ""),
             ]
         )
         w.status_line.setText("Mock mode — no camera I/O")

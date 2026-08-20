@@ -78,7 +78,7 @@ class FirstRunWizard(QDialog):
         # page 2 — radios
         p2 = QWidget()
         v2 = QVBoxLayout(p2)
-        t2 = QLabel("Bluetooth && WiFi")
+        t2 = QLabel("Bluetooth & WiFi")
         t2.setObjectName("title")
         v2.addWidget(t2)
         e2 = QLabel(
@@ -105,7 +105,7 @@ class FirstRunWizard(QDialog):
         v3.addWidget(t3)
         e3 = QLabel(
             "1. Power on your Osmo and keep it within a couple of meters.\n"
-            "2. Click Finish && pair below.\n"
+            "2. Click Finish & pair below.\n"
             "3. When the camera shows a prompt reading OSMO, tap approve on "
             "its screen.\n\nYou can also skip this and pair later with Refresh."
         )

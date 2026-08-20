@@ -19,9 +19,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     started_at REAL NOT NULL,
     finished_at REAL,
     transport TEXT NOT NULL DEFAULT 'wifi',
+    action TEXT NOT NULL DEFAULT 'transfer',   -- transfer|refresh|delete|usb
     files_done INTEGER NOT NULL DEFAULT 0,
     bytes_done INTEGER NOT NULL DEFAULT 0,
+    seconds REAL,
+    rate_mbs REAL,
     log_path TEXT,
+    report_path TEXT,
+    outcome TEXT,                              -- ok|partial|failed|empty
     note TEXT
 );
 CREATE TABLE IF NOT EXISTS transfers (
@@ -64,6 +69,23 @@ class TransferRow:
     log_path: str | None = None  # the session log this transfer belongs to
 
 
+@dataclass
+class SessionRow:
+    id: int
+    camera_id: str
+    action: str
+    started_at: float
+    finished_at: float | None
+    files_done: int
+    bytes_done: int
+    seconds: float | None
+    rate_mbs: float | None
+    outcome: str | None
+    report_path: str | None
+    log_path: str | None
+    note: str | None
+
+
 class HistoryDB:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -79,6 +101,11 @@ class HistoryDB:
             for stmt in (
                 "ALTER TABLE transfers ADD COLUMN dest_name TEXT",
                 "ALTER TABLE sessions ADD COLUMN log_path TEXT",
+                "ALTER TABLE sessions ADD COLUMN action TEXT NOT NULL DEFAULT 'transfer'",
+                "ALTER TABLE sessions ADD COLUMN seconds REAL",
+                "ALTER TABLE sessions ADD COLUMN rate_mbs REAL",
+                "ALTER TABLE sessions ADD COLUMN report_path TEXT",
+                "ALTER TABLE sessions ADD COLUMN outcome TEXT",
             ):
                 try:
                     self._db.execute(stmt)
@@ -92,20 +119,45 @@ class HistoryDB:
     # -- sessions ------------------------------------------------------------
 
     def start_session(self, camera_id: str, transport: str = "wifi",
-                      log_path: str | None = None) -> int:
+                      action: str = "transfer", log_path: str | None = None) -> int:
         cur = self._db.execute(
-            "INSERT INTO sessions(camera_id, started_at, transport, log_path) VALUES(?,?,?,?)",
-            (camera_id, time.time(), transport, log_path),
+            "INSERT INTO sessions(camera_id, started_at, transport, action, log_path) "
+            "VALUES(?,?,?,?,?)",
+            (camera_id, time.time(), transport, action, log_path),
         )
         self._db.commit()
         return cur.lastrowid
 
-    def finish_session(self, session_id: int, files_done: int, bytes_done: int, note: str = "") -> None:
+    def finish_session(self, session_id: int, files_done: int, bytes_done: int,
+                       note: str = "", seconds: float | None = None,
+                       rate_mbs: float | None = None, outcome: str | None = None,
+                       report_path: str | None = None) -> None:
         self._db.execute(
-            "UPDATE sessions SET finished_at=?, files_done=?, bytes_done=?, note=? WHERE id=?",
-            (time.time(), files_done, bytes_done, note, session_id),
+            "UPDATE sessions SET finished_at=?, files_done=?, bytes_done=?, note=?, "
+            "seconds=?, rate_mbs=?, outcome=?, report_path=? WHERE id=?",
+            (time.time(), files_done, bytes_done, note, seconds, rate_mbs,
+             outcome, report_path, session_id),
         )
         self._db.commit()
+
+    def set_session_report(self, session_id: int, report_path: str) -> None:
+        self._db.execute(
+            "UPDATE sessions SET report_path=? WHERE id=?", (report_path, session_id)
+        )
+        self._db.commit()
+
+    def recent_sessions(self, limit: int = 200, camera_id: str | None = None) -> list[SessionRow]:
+        q = (
+            "SELECT id, camera_id, action, started_at, finished_at, files_done, bytes_done, "
+            "seconds, rate_mbs, outcome, report_path, log_path, note FROM sessions "
+        )
+        args: tuple = ()
+        if camera_id:
+            q += "WHERE camera_id=? "
+            args = (camera_id,)
+        q += "ORDER BY started_at DESC LIMIT ?"
+        rows = self._db.execute(q, args + (limit,)).fetchall()
+        return [SessionRow(*r) for r in rows]
 
     # -- transfers -----------------------------------------------------------
 

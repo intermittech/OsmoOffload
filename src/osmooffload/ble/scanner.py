@@ -103,3 +103,39 @@ async def scan(timeout: float = 8.0) -> list[FoundCamera]:
         )
     found.sort(key=lambda c: -c.rssi)
     return found
+
+
+async def find_fast(address: str, timeout: float = 12.0) -> FoundCamera | None:
+    """Return the saved camera as soon as its advert is seen, instead of
+    waiting out the full scan window — the common reconnect case resolves in
+    a second or two rather than the fixed timeout."""
+    import asyncio
+
+    want = address.lower()
+    found_evt = asyncio.Event()
+    hit: dict[str, FoundCamera] = {}
+
+    def on_detect(device, adv) -> None:
+        if (device.address or "").lower() != want:
+            return
+        model_id, model_name = _parse_model(adv.manufacturer_data)
+        name = adv.local_name or device.name or ""
+        if model_id is None and name.startswith("OsmoPocket4P"):
+            model_id, model_name = 0x0022, "Osmo Pocket 4 Pro"
+        hit["c"] = FoundCamera(
+            address=device.address, name=name, rssi=adv.rssi,
+            model_id=model_id, model_name=model_name,
+            mfr_hex=";".join(f"{c:04x}:{p.hex()}" for c, p in adv.manufacturer_data.items()),
+            device=device,
+        )
+        found_evt.set()
+
+    scanner = BleakScanner(detection_callback=on_detect)
+    await scanner.start()
+    try:
+        await asyncio.wait_for(found_evt.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        pass
+    finally:
+        await scanner.stop()
+    return hit.get("c")

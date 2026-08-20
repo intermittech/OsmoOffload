@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import socket
 import struct
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -102,6 +103,12 @@ class CameraDatalink:
         self.playback_reported: bool | None = None
         self.channel_mismatch = False
         self._registered_at = 0.0
+        # serializes socket use between caller thread and the keepalive beat
+        self._io_lock = threading.RLock()
+        self._ka_stop: threading.Event | None = None
+        self._ka_thread: threading.Thread | None = None
+        self._open = False
+        self.on_status = None  # optional callback(CameraStatus), from the beat
 
     # -- bring-up ------------------------------------------------------------
 
@@ -137,7 +144,12 @@ class CameraDatalink:
                 "peer answered on its own sequence channel — may be holding a "
                 "session from a previous connection"
             )
+        self._open = True
         return True
+
+    @property
+    def alive(self) -> bool:
+        return self._open
 
     def register(self) -> None:
         self.tx.send_duml(0x00, 0x81, device_info_payload(), receiver_type=0x08, receiver_id=2, cmd_type=4)
@@ -153,6 +165,8 @@ class CameraDatalink:
         log.info("registered (devinfo + presence + gimbal init + %d subs)", len(PARAM_SUBS))
 
     def close(self) -> None:
+        self.stop_keepalive()
+        self._open = False
         try:
             # leave playback politely; harmless if we never entered
             self.tx.send_duml(0x02, 0x0C, bytes.fromhex("01010000"), receiver_type=0x01, receiver_id=0)
@@ -160,6 +174,44 @@ class CameraDatalink:
         except Exception:
             pass
         self.tx.close()
+
+    # -- warm-hold keepalive --------------------------------------------------
+
+    def start_keepalive(self) -> None:
+        """Hold the datalink (and the camera AP) between actions: ~1 Hz
+        presence beat + transport ACK, status kept fresh. Idempotent."""
+        if self._ka_thread and self._ka_thread.is_alive():
+            return
+        self._ka_stop = threading.Event()
+
+        def beat() -> None:
+            ticks = 0
+            while self._ka_stop is not None and not self._ka_stop.wait(1.0):
+                try:
+                    with self._io_lock:
+                        self.presence_beat()
+                        got = self.tx.recv_all(0.15)
+                        self._parse_status(got)
+                        self.tx.send_ack()
+                    ticks += 1
+                    if self.on_status and ticks % 3 == 0:
+                        self.on_status(self.status)
+                except Exception as e:
+                    log.debug("keepalive beat died: %s", e)
+                    self._open = False
+                    return
+
+        self._ka_thread = threading.Thread(target=beat, name="osmo-dl-keepalive", daemon=True)
+        self._ka_thread.start()
+        log.info("datalink keepalive started")
+
+    def stop_keepalive(self) -> None:
+        if self._ka_stop is not None:
+            self._ka_stop.set()
+        if self._ka_thread and self._ka_thread.is_alive():
+            self._ka_thread.join(timeout=2.0)
+        self._ka_thread = None
+        self._ka_stop = None
 
     # -- status --------------------------------------------------------------
 
@@ -243,18 +295,19 @@ class CameraDatalink:
     ) -> bytes | None:
         """Send a command and wait for its non-empty reply frame (the camera
         sends an empty transport ACK first — skip it). Status keeps parsing."""
-        self.tx.send_duml(cmd_set, cmd_id, payload, receiver_type=receiver_type,
-                          receiver_id=receiver_id, cmd_type=cmd_type)
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            got = self.tx.recv_all(0.3)
-            self._parse_status(got)
-            for d in got:
-                for cs, ci, pl in mf.iter_frames(d):
-                    if cs == cmd_set and ci == cmd_id and pl:
-                        return pl
-            self.tx.send_ack()
-        return None
+        with self._io_lock:
+            self.tx.send_duml(cmd_set, cmd_id, payload, receiver_type=receiver_type,
+                              receiver_id=receiver_id, cmd_type=cmd_type)
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                got = self.tx.recv_all(0.3)
+                self._parse_status(got)
+                for d in got:
+                    for cs, ci, pl in mf.iter_frames(d):
+                        if cs == cmd_set and ci == cmd_id and pl:
+                            return pl
+                self.tx.send_ack()
+            return None
 
     # -- delete (irreversible) ----------------------------------------------
 
@@ -292,34 +345,40 @@ class CameraDatalink:
 
     def query_newest_page(self) -> tuple[list[mf.MediaRecord], bytes]:
         """The proven 3-command newest-page sequence. Returns (records, raw_blob)."""
-        blob = bytearray()
-        self.tx.send_duml(0x00, 0x26, list_cmd(SD_QUERY_CTR, 1), receiver_type=0x01, receiver_id=0)
-        last_count = -1
-        stable = 0
-        for batch in range(15):
-            got = self.tx.recv_all(0.8)
-            for r in got:
-                blob += r
-            self._parse_status(got)
-            self.tx.send_ack()
-            self.presence_beat()
-            if batch == 1:
-                self.tx.send_duml(0x00, 0x26, LIST_TRIGGER, receiver_type=0x01, receiver_id=0)
-            if batch == 2:
-                self.tx.send_duml(0x00, 0x26, list_cmd(INTERNAL_QUERY_CTR, NEWEST_SENTINEL),
-                                  receiver_type=0x01, receiver_id=0)
-            count = len(mf.decode(mf.reassemble(bytes(blob))))
-            if count != last_count:
-                log.info("list: %d files (batch %d, blob %d B)", count, batch, len(blob))
-            if batch >= 4 and count > 0 and count == last_count:
-                stable += 1
-                if stable >= 2:
+        with self._io_lock:
+            blob = bytearray()
+            self.tx.send_duml(0x00, 0x26, list_cmd(SD_QUERY_CTR, 1), receiver_type=0x01, receiver_id=0)
+            last_count = -1
+            stable = 0
+            for batch in range(15):
+                got = self.tx.recv_all(0.8)
+                for r in got:
+                    blob += r
+                self._parse_status(got)
+                self.tx.send_ack()
+                self.presence_beat()
+                if batch == 1:
+                    self.tx.send_duml(0x00, 0x26, LIST_TRIGGER, receiver_type=0x01, receiver_id=0)
+                if batch == 2:
+                    self.tx.send_duml(0x00, 0x26, list_cmd(INTERNAL_QUERY_CTR, NEWEST_SENTINEL),
+                                      receiver_type=0x01, receiver_id=0)
+                if batch == 4 and not mf.list_answered(bytes(blob)):
+                    # not a single 0x00/0x27 frame: dead/stale session —
+                    # fail fast so the caller can re-handshake (saves ~8 s)
+                    log.warning("list unanswered after %d batches — bailing early", batch + 1)
                     break
-            else:
-                stable = 0
-            last_count = count
-        raw = bytes(blob)
-        return self._collect_stores(raw), raw
+                count = len(mf.decode(mf.reassemble(bytes(blob))))
+                if count != last_count:
+                    log.info("list: %d files (batch %d, blob %d B)", count, batch, len(blob))
+                if batch >= 4 and count > 0 and count == last_count:
+                    stable += 1
+                    if stable >= 2:
+                        break
+                else:
+                    stable = 0
+                last_count = count
+            raw = bytes(blob)
+            return self._collect_stores(raw), raw
 
     def _collect_stores(self, raw: bytes) -> list[mf.MediaRecord]:
         def slice_of(ctr: int) -> list[mf.MediaRecord]:

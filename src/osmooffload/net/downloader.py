@@ -153,6 +153,24 @@ class CameraHttp:
                 headers = {"Range": f"bytes={pos}-"} if pos else {}
                 conn.request("GET", url, headers=headers)
                 resp = conn.getresponse()
+                if resp.status == 416:
+                    # Range past end-of-file: the .part is already complete (or
+                    # a stale oversize leftover). Re-HEAD; finalize if it matches,
+                    # else discard and restart from zero.
+                    resp.read()
+                    self._reset()
+                    real = self.head_size(storage, path)
+                    if real is not None and pos == real:
+                        expected_size = real
+                        break  # complete — finalize below
+                    log.warning("416 on %s (pos=%d real=%s) — restarting from 0",
+                                dest.name, pos, real)
+                    part.unlink(missing_ok=True)
+                    h = hashlib.blake2b(digest_size=16)
+                    pos = 0
+                    if real is not None:
+                        expected_size = real
+                    continue
                 if resp.status not in (200, 206):
                     resp.read()
                     raise DownloadError(f"HTTP {resp.status}")

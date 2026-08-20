@@ -156,14 +156,17 @@ class UsbIngester:
         items: list[tuple[UsbFile, Path, str | None]],
         progress: Callable[[SessionProgress], None] | None = None,
         cancelled: Callable[[], bool] | None = None,
+        session_id: int | None = None,
     ) -> SessionProgress:
         todo = [(uf, dest) for uf, dest, skip in items if not skip]
         prog = SessionProgress(
             total_files=len(todo), total_bytes=sum(uf.size for uf, _ in todo)
         )
-        session_id = self.db.start_session(
-            self.cfg.camera_folder, transport="usb", log_path=self.cfg.log_path
-        )
+        own_session = session_id is None
+        if own_session:
+            session_id = self.db.start_session(
+                self.cfg.camera_folder, transport="usb", log_path=self.cfg.log_path
+            )
         prog.session_id = session_id
         try:
             for uf, dest in todo:
@@ -174,6 +177,7 @@ class UsbIngester:
                 prog.current_name = uf.name
                 prog.current_total = uf.size
                 prog.current_done = 0
+                t_file = time.monotonic()
                 tid = self.db.start_transfer(
                     session_id, self.cfg.camera_folder, uf.media_path, uf.name,
                     parsed.kind, uf.size, "usb", str(dest), dest_name=dest.name,
@@ -199,10 +203,12 @@ class UsbIngester:
                     self.db.finish_transfer(tid, "done", h.hexdigest(), True)
                     prog.done_files += 1
                     prog.done_bytes += copied
+                    secs = time.monotonic() - t_file
                     prog.results.append(
                         {"original": uf.name, "saved_as": dest.name,
                          "dest_path": str(dest), "size": copied, "hash": h.hexdigest(),
-                         "storage": "usb", "kind": parsed.kind, "verified": True}
+                         "storage": "usb", "kind": parsed.kind, "verified": True,
+                         "speed_mbs": copied / secs / 1e6 if secs > 0.05 else None}
                     )
                     log.info("usb done %s -> %s (%d B)", uf.name, dest.name, copied)
                 except OSError as e:
@@ -214,6 +220,7 @@ class UsbIngester:
                 if progress:
                     progress(prog)
         finally:
-            self.db.finish_session(session_id, prog.done_files, prog.done_bytes,
-                                   note="; ".join(prog.failures[:5]))
+            if own_session:
+                self.db.finish_session(session_id, prog.done_files, prog.done_bytes,
+                                       note="; ".join(prog.failures[:5]))
         return prog
