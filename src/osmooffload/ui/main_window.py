@@ -1,16 +1,18 @@
-"""Main window: camera rail, status card (pill + battery + storage bars),
-transfer/cancel actions, and Queue / History / Settings tabs with empty states."""
+"""Main window: camera rail, status card, Media grid, Queue/History/Settings."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QProgressBar, QPushButton, QStackedLayout,
-    QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+    QCheckBox, QFileDialog, QGraphicsOpacityEffect, QHBoxLayout, QHeaderView,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton,
+    QStackedLayout, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout,
+    QWidget,
 )
 
-from .widgets import BatteryRow, StorageBar
+from . import theme
+from .widgets import AnimatedBar, BatteryRow, StorageBar
 
 
 def human_size(n: int | None) -> str:
@@ -21,6 +23,20 @@ def human_size(n: int | None) -> str:
             return f"{n:.0f} {unit}" if unit == "B" else f"{n:.2f} {unit}"
         n /= 1000
     return "—"
+
+
+def placeholder_thumb(size: QSize = QSize(160, 90)) -> QPixmap:
+    pm = QPixmap(size)
+    pm.fill(QColor(theme.BG_INSET))
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(QColor(theme.BORDER))
+    p.setBrush(QColor(theme.BG_CARD))
+    p.drawRoundedRect(4, 4, size.width() - 8, size.height() - 8, 8, 8)
+    p.setPen(QColor(theme.FG_DIM))
+    p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, "…")
+    p.end()
+    return pm
 
 
 class StatusPill(QLabel):
@@ -60,9 +76,9 @@ class CameraCard(QWidget):
 
         self.battery = BatteryRow()
         root.addWidget(self.battery)
-        self.storage_internal = StorageBar("Internal storage")
+        self.storage_internal = StorageBar("Internal storage", theme.STORE_INTERNAL)
         root.addWidget(self.storage_internal)
-        self.storage_sd = StorageBar("SD card")
+        self.storage_sd = StorageBar("SD card", theme.STORE_SD)
         root.addWidget(self.storage_sd)
 
         buttons = QHBoxLayout()
@@ -90,9 +106,142 @@ class CameraCard(QWidget):
         self.btn_cancel.setVisible(transferring)
 
 
-class TablePane(QWidget):
-    """A table with an empty-state message underneath a stacked layout."""
+class MediaTab(QWidget):
+    transfer_selected = Signal(list)
 
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._items: dict[str, QListWidgetItem] = {}
+        self._stack = QStackedLayout(self)
+
+        self.empty = QLabel("Refresh to browse what's on the camera.")
+        self.empty.setObjectName("empty")
+        self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        content = QWidget()
+        v = QVBoxLayout(content)
+        v.setContentsMargins(0, 8, 0, 0)
+        v.setSpacing(8)
+
+        bar = QHBoxLayout()
+        self.btn_new = QPushButton("Select new")
+        self.btn_none = QPushButton("Clear selection")
+        for b in (self.btn_new, self.btn_none):
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_get = QPushButton("Transfer selected")
+        self.btn_get.setObjectName("primary")
+        self.btn_get.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_get.clicked.connect(
+            lambda: self.transfer_selected.emit(self.checked_names())
+        )
+        bar.addWidget(self.btn_new)
+        bar.addWidget(self.btn_none)
+        bar.addStretch(1)
+        bar.addWidget(self.btn_get)
+        v.addLayout(bar)
+
+        self.grid = QListWidget()
+        self.grid.setObjectName("mediaGrid")
+        self.grid.setViewMode(QListWidget.ViewMode.IconMode)
+        self.grid.setIconSize(QSize(160, 90))
+        self.grid.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.grid.setMovement(QListWidget.Movement.Static)
+        self.grid.setSpacing(6)
+        self.grid.setUniformItemSizes(True)
+        self.grid.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        self._just_changed = False
+        self.grid.itemChanged.connect(self._on_item_changed)
+        self.grid.itemClicked.connect(self._on_item_clicked)
+        v.addWidget(self.grid, 1)
+
+        self.btn_new.clicked.connect(lambda: self._check(only_new=True))
+        self.btn_none.clicked.connect(lambda: self._check(none=True))
+
+        self._stack.addWidget(self.empty)
+        self._stack.addWidget(content)
+        self._stack.setCurrentWidget(self.empty)
+        self._update_button()
+
+    def _on_item_changed(self, item: QListWidgetItem) -> None:
+        # checked == selected, visually (amber border via ::item:selected)
+        self._just_changed = True
+        item.setSelected(item.checkState() == Qt.CheckState.Checked)
+        self._update_button()
+
+    def _on_item_clicked(self, item: QListWidgetItem) -> None:
+        # Click anywhere on a tile toggles it — unless this click already
+        # toggled the checkbox itself (itemChanged fired first).
+        if self._just_changed:
+            self._just_changed = False
+            item.setSelected(item.checkState() == Qt.CheckState.Checked)
+            return
+        item.setCheckState(
+            Qt.CheckState.Unchecked
+            if item.checkState() == Qt.CheckState.Checked
+            else Qt.CheckState.Checked
+        )
+
+    def set_files(self, rows: list[tuple[str, int, str]]) -> None:
+        """rows: (name, size, note) — note 'queued' means new/transferable."""
+        self.grid.blockSignals(True)
+        self.grid.clear()
+        self._items.clear()
+        ph = placeholder_thumb()
+        for name, size, note in rows:
+            label = f"{name}\n{human_size(size)}" + ("" if note == "queued" else f" · {note}")
+            item = QListWidgetItem(QIcon(ph), label)
+            item.setData(Qt.ItemDataRole.UserRole, name)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                Qt.CheckState.Checked if note == "queued" else Qt.CheckState.Unchecked
+            )
+            item.setSizeHint(QSize(176, 140))
+            self.grid.addItem(item)
+            self._items[name] = item
+        self.grid.blockSignals(False)
+        for name, item in self._items.items():
+            item.setSelected(item.checkState() == Qt.CheckState.Checked)
+        self._stack.setCurrentWidget(self.empty if not rows else self._stack.widget(1))
+        self._update_button()
+
+    def set_thumb(self, name: str, path: str) -> None:
+        item = self._items.get(name)
+        if item:
+            item.setIcon(QIcon(path))
+
+    def checked_names(self) -> list[str]:
+        return [
+            self.grid.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(self.grid.count())
+            if self.grid.item(i).checkState() == Qt.CheckState.Checked
+        ]
+
+    def _check(self, only_new: bool = False, none: bool = False) -> None:
+        self.grid.blockSignals(True)
+        for i in range(self.grid.count()):
+            item = self.grid.item(i)
+            if none:
+                item.setCheckState(Qt.CheckState.Unchecked)
+            elif only_new:
+                is_new = "·" not in item.text()
+                item.setCheckState(
+                    Qt.CheckState.Checked if is_new else Qt.CheckState.Unchecked
+                )
+        self.grid.blockSignals(False)
+        self._update_button()
+
+    def _update_button(self) -> None:
+        n = len(self.checked_names())
+        self.btn_get.setText(f"Transfer selected ({n})" if n else "Transfer selected")
+        self.btn_get.setEnabled(n > 0)
+
+    def set_busy(self, busy: bool) -> None:
+        for b in (self.btn_new, self.btn_none):
+            b.setEnabled(not busy)
+        self.btn_get.setEnabled(not busy and bool(self.checked_names()))
+
+
+class TablePane(QWidget):
     def __init__(self, headers: list[str], empty_text: str, parent: QWidget | None = None):
         super().__init__(parent)
         self._stack = QStackedLayout(self)
@@ -190,6 +339,7 @@ class SettingsTab(QWidget):
 
 class MainWindow(QWidget):
     transfer_requested = Signal()
+    transfer_selected_requested = Signal(list)
     refresh_requested = Signal()
     cancel_requested = Signal()
     settings_saved = Signal(dict)
@@ -199,7 +349,7 @@ class MainWindow(QWidget):
         self.setObjectName("root")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setWindowTitle("Osmo Offload")
-        self.resize(1000, 680)
+        self.resize(1020, 700)
         self._queue_rows: dict[str, int] = {}
 
         root = QHBoxLayout(self)
@@ -228,6 +378,8 @@ class MainWindow(QWidget):
         main.addWidget(self.card)
 
         self.tabs = QTabWidget()
+        self.media = MediaTab()
+        self.media.transfer_selected.connect(self.transfer_selected_requested)
         self.queue = TablePane(
             ["File", "Size", "Progress", "Status"],
             "Nothing queued yet.\nRefresh previews what's new; Transfer pulls it in.",
@@ -238,6 +390,7 @@ class MainWindow(QWidget):
         )
         self.settings_tab = SettingsTab(settings)
         self.settings_tab.changed.connect(self.settings_saved)
+        self.tabs.addTab(self.media, "Media")
         self.tabs.addTab(self.queue, "Queue")
         self.tabs.addTab(self.history, "History")
         self.tabs.addTab(self.settings_tab, "Settings")
@@ -247,6 +400,20 @@ class MainWindow(QWidget):
         self.status_line.setObjectName("dim")
         main.addWidget(self.status_line)
         root.addLayout(main, 1)
+
+        self._fade_in(self.card)
+
+    @staticmethod
+    def _fade_in(widget: QWidget) -> None:
+        eff = QGraphicsOpacityEffect(widget)
+        widget.setGraphicsEffect(eff)
+        anim = QPropertyAnimation(eff, b"opacity", widget)
+        anim.setDuration(theme.DUR)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.finished.connect(lambda: widget.setGraphicsEffect(None))
+        anim.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
 
     # -- controller-facing helpers ------------------------------------------
 
@@ -267,20 +434,20 @@ class MainWindow(QWidget):
             self._queue_rows[name] = r
             t.setItem(r, 0, QTableWidgetItem(name))
             t.setItem(r, 1, QTableWidgetItem(human_size(size)))
-            bar = QProgressBar()
-            bar.setRange(0, 1000)
+            bar = AnimatedBar()
             bar.setValue(1000 if note in ("already offloaded", "exists on disk") else 0)
             t.setCellWidget(r, 2, bar)
             t.setItem(r, 3, QTableWidgetItem(note))
         self.queue.show_rows(bool(rows))
+        self.media.set_files(rows)
 
     def update_file_progress(self, name: str, done: int, total: int, status: str) -> None:
         r = self._queue_rows.get(name)
         if r is None:
             return
         bar = self.queue.table.cellWidget(r, 2)
-        if isinstance(bar, QProgressBar) and total:
-            bar.setValue(int(1000 * done / total))
+        if isinstance(bar, AnimatedBar) and total:
+            bar.animate_to(int(1000 * done / total))
         self.queue.table.setItem(r, 3, QTableWidgetItem(status))
 
     def set_history_rows(self, rows: list[tuple[str, str, str, str, str, str]]) -> None:

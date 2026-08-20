@@ -23,10 +23,10 @@ def make_icon() -> QIcon:
     p.setPen(Qt.PenStyle.NoPen)
     p.drawEllipse(4, 4, 56, 56)
     p.setBrush(Qt.BrushStyle.NoBrush)
-    p.setPen(QPen(QColor(theme.ACCENT), 7))
+    p.setPen(QPen(QColor(theme.ACCENT_DIM), 7))
     p.drawEllipse(12, 12, 40, 40)
-    p.setPen(QPen(QColor(theme.OK), 7))
-    p.drawArc(12, 12, 40, 40, 45 * 16, 120 * 16)
+    p.setPen(QPen(QColor(theme.ACCENT_HOVER), 7))
+    p.drawArc(12, 12, 40, 40, 30 * 16, 150 * 16)
     p.end()
     return QIcon(pm)
 
@@ -87,6 +87,7 @@ class OsmoApp:
         w = self.window
 
         w.transfer_requested.connect(c.transfer)
+        w.transfer_selected_requested.connect(c.transfer_selected)
         w.refresh_requested.connect(c.refresh)
         w.cancel_requested.connect(c.cancel)
         self.act_transfer.triggered.connect(c.transfer)
@@ -94,6 +95,7 @@ class OsmoApp:
         c.state_changed.connect(self._on_state)
         c.status_updated.connect(self._on_status)
         c.plan_ready.connect(w.set_plan)
+        c.thumb_ready.connect(w.media.set_thumb)
         c.file_progress.connect(self._on_file_progress)
         c.session_done.connect(self._on_session_done)
         c.approval_needed.connect(self._on_approval_needed)
@@ -120,6 +122,7 @@ class OsmoApp:
         w.status_line.setText(detail)
         busy = state in ("connecting", "transferring")
         w.card.set_busy(busy, transferring=(state == "transferring"))
+        w.media.set_busy(busy)
         # camera list dot: in-range while a session is live
         saved = self.state.get("cameras", {})
         w.set_cameras(
@@ -225,9 +228,9 @@ class OsmoApp:
         w.set_cameras([("EC:72:F7:C4:88:A7", "Osmo Pocket 4 Pro", True)])
         w.card.title.setText("Osmo Pocket 4 Pro")
         w.card.pill.set_state("connected", "connected")
-        w.card.battery.set_state(86, -240)
-        w.card.storage_internal.set_mib(105510, 77000)
-        w.card.storage_sd.set_absent("no card")
+        w.card.battery.set_state(44, -240)
+        w.card.storage_internal.set_mib(105510, 42000)
+        w.card.storage_sd.set_mib(121659, 98410)
         w.set_plan(
             [
                 ("DJI_20260820125927_0001_D.MP4", 252541325, "already offloaded"),

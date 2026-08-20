@@ -46,6 +46,7 @@ class CameraController(QObject):
     state_changed = Signal(str, str)  # state key, human detail
     status_updated = Signal(dict)  # battery/storage fields
     plan_ready = Signal(list)  # [(name, size, note)] for the queue
+    thumb_ready = Signal(str, str)  # file name, cached thumbnail path
     file_progress = Signal(str, int, int, int, int, float)  # name, done, total, fdone, ftotal, MB/s
     session_done = Signal(dict)
     approval_needed = Signal()
@@ -111,6 +112,10 @@ class CameraController(QObject):
     def transfer(self) -> None:
         self._submit(self._session(transfer=True))
 
+    def transfer_selected(self, names: list) -> None:
+        """Transfer exactly the named files (Media tab cherry-pick)."""
+        self._submit(self._session(transfer=True, selected=set(names)))
+
     # -- the session job -----------------------------------------------------
 
     def _on_ble_frame(self, frame) -> None:
@@ -119,7 +124,7 @@ class CameraController(QObject):
             cur = int.from_bytes(frame.payload[5:9], "little", signed=True)
             self.status_updated.emit({"battery_pct": frame.payload[20], "current_ma": cur})
 
-    async def _session(self, transfer: bool) -> None:
+    async def _session(self, transfer: bool, selected: set | None = None) -> None:
         state = config.load_state()
         saved = state.get("cameras", {})
         address = next(iter(saved), None)
@@ -162,9 +167,14 @@ class CameraController(QObject):
 
             self.state_changed.emit("connected", "Planning…")
             plan = await asyncio.to_thread(off.plan, records)
+            if selected is not None:
+                for p in plan:
+                    if not p.skipped and p.record.name not in selected:
+                        p.skipped = "not selected"
             self.plan_ready.emit(
                 [(p.record.name, p.size or 0, p.skipped or "queued") for p in plan]
             )
+            await asyncio.to_thread(self._fetch_thumbs, http, plan, cam_folder)
             todo = [p for p in plan if not p.skipped]
             if not transfer:
                 self.state_changed.emit(
@@ -184,10 +194,18 @@ class CameraController(QObject):
             if self.settings.get("keep_awake", True):
                 _keep_awake(True)
             t0 = time.monotonic()
+            last_emit = [0.0]
 
             def on_progress(prog: SessionProgress) -> None:
+                # Throttle: raw callbacks fire per 256 KB chunk (~240/s at
+                # 60 MB/s) — emitting each would flood the Qt event loop.
+                now = time.monotonic()
+                complete = prog.current_total and prog.current_done >= prog.current_total
+                if now - last_emit[0] < 0.1 and not complete:
+                    return
+                last_emit[0] = now
                 done = prog.done_bytes + prog.current_done
-                rate = done / max(time.monotonic() - t0, 0.01) / 1e6
+                rate = done / max(now - t0, 0.01) / 1e6
                 self.file_progress.emit(
                     prog.current_name, prog.current_done, prog.current_total,
                     prog.done_files, prog.total_files, rate,
@@ -217,6 +235,27 @@ class CameraController(QObject):
             _keep_awake(False)
             await conn.teardown(link)
             self.state_changed.emit("idle", "Camera released (it will sleep)")
+
+    def _fetch_thumbs(self, http: CameraHttp, plan, cam_folder: str) -> None:
+        """Fetch + cache camera thumbnails (.scr JPEGs, ~tens of KB each) and
+        announce each one. Cache hits cost nothing and emit immediately."""
+        thumb_dir = config.CONFIG_DIR / "thumbs" / cam_folder
+        thumb_dir.mkdir(parents=True, exist_ok=True)
+        for item in plan:
+            rec = item.record
+            cache = thumb_dir / f"{rec.name}.jpg"
+            if cache.exists():
+                self.thumb_ready.emit(rec.name, str(cache))
+                continue
+            if not rec.thumb_path or item.storage_idx is None:
+                continue
+            # the manifest thumb path has no extension; bodies serve .scr or .thm
+            for cand in (rec.thumb_path + ".scr", rec.thumb_path + ".thm", rec.thumb_path):
+                data = http.fetch_small(item.storage_idx, cand)
+                if data and data[:2] == b"\xff\xd8":  # JPEG magic
+                    cache.write_bytes(data)
+                    self.thumb_ready.emit(rec.name, str(cache))
+                    break
 
     def _fetch_records(self, identifier: str):
         last_status = None
