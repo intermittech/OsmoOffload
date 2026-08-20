@@ -15,6 +15,8 @@ from dataclasses import dataclass
 
 log = logging.getLogger("osmo.update")
 
+DEFAULT_REPO = "intermittech/OsmoOffload"
+
 
 @dataclass
 class UpdateInfo:

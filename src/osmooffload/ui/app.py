@@ -51,7 +51,7 @@ class OsmoApp:
             "write_reports": self.state.get("write_reports", True),
             "open_folder": self.state.get("open_folder", False),
             "hook_cmd": self.state.get("hook_cmd", ""),
-            "update_repo": self.state.get("update_repo", ""),
+            "update_repo": self.state.get("update_repo") or "intermittech/OsmoOffload",
         }
 
         self.icon = make_icon()

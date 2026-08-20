@@ -5,6 +5,18 @@ v1.0.0 is declared by the project owner.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-20
+First public release, and the end of a one-day 0.x sprint: protocol core
+(BLE pairing/wake, WiFi handoff, UDP datalink, HTTP downloads), the full GUI
+(media grid, queue, session history, settings, wizard, tray), verified
+transfers with reports, selection-driven camera cleanup, USB ingest, warm
+connection reuse, packaging (standalone exe + installer) and the GitHub
+update check — everything hardware-verified against a DJI Osmo Pocket 4 Pro.
+### Added
+- Default update source now points at the public repo
+  (intermittech/OsmoOffload), so fresh installs learn about new releases.
+- MIT LICENSE file; public README and repository.
+
 ## [0.13.1] - 2026-08-20
 ### Changed
 - "Last 24 h" replaced by **"Only synced"** — the exclusive mirror of "Only

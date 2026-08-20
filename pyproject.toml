@@ -1,6 +1,6 @@
 [project]
 name = "osmo-offload"
-version = "0.13.1"
+version = "1.0.0"
 description = "Wireless media offload from DJI Osmo cameras to Windows — no phone, no cable, no DJI account"
 requires-python = ">=3.13"
 dependencies = [
