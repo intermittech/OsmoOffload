@@ -338,13 +338,17 @@ class MediaTab(QWidget):
         self.btn_video.setObjectName("selVideo")
         self.btn_photo = QPushButton("All photo")
         self.btn_photo.setObjectName("selPhoto")
-        self.btn_24h = QPushButton("Last 24 h")
+        self.btn_synced = QPushButton("Only synced")
+        self.btn_synced.setToolTip(
+            "Select exactly the files that already have a copy at the destination "
+            "folder — handy before 'Delete files on camera'"
+        )
         self.btn_unsynced = QPushButton("Only unsynced")
         self.btn_unsynced.setToolTip(
             "Select exactly the files that are not at the destination folder yet"
         )
         self.btn_none = QPushButton("None")
-        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_24h,
+        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_synced,
                   self.btn_unsynced, self.btn_none):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_all.clicked.connect(lambda: self._select(lambda t: True))
@@ -355,8 +359,8 @@ class MediaTab(QWidget):
         self.btn_photo.clicked.connect(
             lambda: self._select(lambda t: t.kind == "photo", additive=True)
         )
-        self.btn_24h.clicked.connect(self._select_last_24h)
-        # exclusive: the selection becomes exactly the not-yet-synced set
+        # exclusive pair: selection becomes exactly the synced / unsynced set
+        self.btn_synced.clicked.connect(lambda: self._select(lambda t: t.on_disk))
         self.btn_unsynced.clicked.connect(lambda: self._select(lambda t: not t.on_disk))
         self.btn_none.clicked.connect(lambda: self._select(lambda t: False))
 
@@ -373,7 +377,7 @@ class MediaTab(QWidget):
             "Delete files from the camera that have a verified copy on this PC."
         )
         self.btn_free.clicked.connect(self.delete_offloaded)
-        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_24h,
+        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_synced,
                   self.btn_unsynced, self.btn_none):
             bar.addWidget(b)
         bar.addStretch(1)
@@ -440,14 +444,6 @@ class MediaTab(QWidget):
                 t.set_checked(False)
         self._update_button()
 
-    def _select_last_24h(self) -> None:
-        import time as _time
-
-        cutoff = _time.time() - 24 * 3600
-        self._select(
-            lambda t: t.timestamp is not None and t.timestamp >= cutoff, additive=True
-        )
-
     def _update_button(self) -> None:
         n = len(self.checked_names())
         self.btn_get.setText(f"Transfer selected ({n})" if n else "Transfer selected")
@@ -456,7 +452,7 @@ class MediaTab(QWidget):
         self.selection_changed.emit()
 
     def set_busy(self, busy: bool) -> None:
-        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_24h,
+        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_synced,
                   self.btn_unsynced, self.btn_none):
             b.setEnabled(not busy)
         n = bool(self.checked_names())

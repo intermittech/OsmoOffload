@@ -5,6 +5,13 @@ v1.0.0 is declared by the project owner.
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-08-20
+### Changed
+- "Last 24 h" replaced by **"Only synced"** — the exclusive mirror of "Only
+  unsynced": selection becomes exactly the files already at the destination.
+  Two clicks now cover "delete everything I've already synced from the
+  camera" without touching unsynced footage.
+
 ## [0.13.0] - 2026-08-20
 ### Fixed
 - **Changing the base folder now resyncs correctly.** "Already on disk" is
