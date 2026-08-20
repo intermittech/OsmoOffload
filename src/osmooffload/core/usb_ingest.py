@@ -144,10 +144,10 @@ class UsbIngester:
             if parsed.kind not in self.cfg.kinds:
                 skip = f"filtered ({parsed.kind})"
             elif self.db.is_offloaded(self.cfg.camera_folder, uf.media_path, uf.size):
-                skip = "already offloaded"
+                skip = "already on disk"
             dest = self._dest_for(uf.name)
             if skip is None and dest.exists() and dest.stat().st_size == uf.size:
-                skip = "exists on disk"
+                skip = "already on disk"
             items.append((uf, dest, skip))
         return items
 

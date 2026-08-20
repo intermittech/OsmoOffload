@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QFileDialog, QGraphicsOpacityEffect, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton,
+    QCheckBox, QFileDialog, QFrame, QGraphicsOpacityEffect, QHBoxLayout,
+    QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton,
     QStackedLayout, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout,
     QWidget,
 )
@@ -37,6 +37,51 @@ def placeholder_thumb(size: QSize = QSize(160, 90)) -> QPixmap:
     p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, "…")
     p.end()
     return pm
+
+
+class Legend(QWidget):
+    """Tiny key at the bottom of the camera rail explaining the visuals."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("legend")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(10, 6, 8, 4)
+        v.setSpacing(4)
+
+        def swatch(color: str) -> QLabel:
+            s = QLabel()
+            s.setFixedSize(12, 12)
+            s.setStyleSheet(
+                f"background: transparent; border: 2px solid {color}; border-radius: 3px;"
+            )
+            return s
+
+        def row(widget: QWidget, text: str) -> None:
+            h = QHBoxLayout()
+            h.setSpacing(6)
+            h.addWidget(widget)
+            lab = QLabel(text)
+            lab.setWordWrap(True)
+            h.addWidget(lab, 1)
+            v.addLayout(h)
+
+        title = QLabel("Legend")
+        title.setStyleSheet("font-weight: 600;")
+        v.addWidget(title)
+        row(swatch(theme.KIND_VIDEO), "video")
+        row(swatch(theme.KIND_PHOTO), "photo")
+        badge = QLabel()
+        badge.setPixmap(disk_badge(14))
+        row(badge, "grayed = already on disk")
+        dot = QLabel("●")
+        dot.setStyleSheet(f"color: {theme.OK}; font-size: 9pt;")
+        dot.setFixedWidth(12)
+        row(dot, "camera in range")
+        check = QLabel("☑")
+        check.setStyleSheet(f"color: {theme.ACCENT}; font-size: 10pt;")
+        check.setFixedWidth(12)
+        row(check, "selected to transfer")
 
 
 class StatusPill(QLabel):
@@ -114,13 +159,125 @@ class CameraCard(QWidget):
         self.btn_cancel.setVisible(transferring)
 
 
+def disk_badge(size: int = 18) -> QPixmap:
+    """Small 'saved to disk' glyph: a floppy outline with a check."""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setBrush(QColor(theme.BG_INSET))
+    p.setPen(QColor(theme.FG_DIM))
+    p.drawRoundedRect(1, 1, size - 2, size - 2, 4, 4)
+    p.drawRect(size // 3, 2, size // 3, size // 4)  # floppy shutter
+    pen = p.pen()
+    pen.setColor(QColor(theme.OK))
+    pen.setWidthF(1.8)
+    p.setPen(pen)
+    p.drawLine(4, size - 8, size // 2 - 1, size - 5)  # check mark
+    p.drawLine(size // 2 - 1, size - 5, size - 4, size // 2 - 2)
+    p.end()
+    return pm
+
+
+class MediaTile(QFrame):
+    """One media file: kind-colored border, overlay checkbox (the only
+    selection mechanism), disk badge + grayscale when already on disk."""
+
+    toggled = Signal()
+
+    THUMB = QSize(160, 90)
+
+    def __init__(self, name: str, size: int, note: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.name = name
+        self.note = note
+        upper = name.upper()
+        self.kind = "video" if upper.endswith((".MP4", ".MOV", ".LRF")) else "photo"
+        self.on_disk = note == "already on disk"
+
+        self.setObjectName("tile")
+        self.setFixedSize(176, 148)
+        self.setProperty("kind", self.kind)
+        self.setProperty("ondisk", "true" if self.on_disk else "false")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(
+            f"{name} · {human_size(size)}"
+            + (" · already on disk" if self.on_disk else "")
+        )
+
+        self.thumb = QLabel(self)
+        self.thumb.setGeometry(8, 8, self.THUMB.width(), self.THUMB.height())
+        self.thumb.setPixmap(placeholder_thumb(self.THUMB))
+
+        self.check = QCheckBox(self)
+        self.check.move(12, 12)
+        self.check.setChecked(note == "queued")
+        self.check.setEnabled(not self.on_disk)
+        self.check.toggled.connect(self._on_toggle)
+
+        if self.on_disk:
+            badge = QLabel(self)
+            badge.setPixmap(disk_badge())
+            badge.move(self.width() - 30, 12)
+            badge.setToolTip("Already on disk")
+
+        self.label = QLabel(self)
+        self.label.setObjectName("tileName")
+        self.label.setGeometry(8, 102, self.width() - 16, 40)
+        self.label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        metrics = self.label.fontMetrics()
+        elided = metrics.elidedText(name, Qt.TextElideMode.ElideMiddle, self.width() - 20)
+        self.label.setText(f"{elided}\n{human_size(size)}")
+        self._sync_style()
+
+    # -- behavior ------------------------------------------------------------
+
+    def mousePressEvent(self, event) -> None:  # click anywhere toggles
+        if self.check.isEnabled():
+            self.check.toggle()
+        event.accept()
+
+    def _on_toggle(self, _checked: bool) -> None:
+        self._sync_style()
+        self.toggled.emit()
+
+    def _sync_style(self) -> None:
+        self.setProperty("checked", "true" if self.check.isChecked() else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    @property
+    def checked(self) -> bool:
+        return self.check.isChecked()
+
+    def set_checked(self, on: bool) -> None:
+        if self.check.isEnabled():
+            self.check.setChecked(on)
+
+    def set_thumb_pixmap(self, src: QPixmap) -> None:
+        canvas = QPixmap(self.THUMB)
+        canvas.fill(QColor(theme.BG_INSET))
+        scaled = src.scaled(self.THUMB, Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation)
+        p = QPainter(canvas)
+        if self.on_disk:
+            p.setOpacity(0.35)  # grayed: already safe on the PC
+            gray = scaled.toImage().convertToFormat(QImage.Format.Format_Grayscale8)
+            scaled = QPixmap.fromImage(gray)
+        p.drawPixmap((self.THUMB.width() - scaled.width()) // 2,
+                     (self.THUMB.height() - scaled.height()) // 2, scaled)
+        p.end()
+        self.thumb.setPixmap(canvas)
+
+
 class MediaTab(QWidget):
     transfer_selected = Signal(list)
     delete_offloaded = Signal()
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self._items: dict[str, QListWidgetItem] = {}
+        self._tiles: dict[str, MediaTile] = {}
+        self._pix_cache: dict[str, QPixmap] = {}  # survives grid rebuilds
         self._stack = QStackedLayout(self)
 
         self.empty = QLabel("Refresh to browse what's on the camera.")
@@ -133,10 +290,22 @@ class MediaTab(QWidget):
         v.setSpacing(8)
 
         bar = QHBoxLayout()
-        self.btn_new = QPushButton("Select new")
-        self.btn_none = QPushButton("Clear selection")
-        for b in (self.btn_new, self.btn_none):
+        self.btn_all = QPushButton("All")
+        self.btn_video = QPushButton("All video")
+        self.btn_photo = QPushButton("All photo")
+        self.btn_none = QPushButton("None")
+        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_none):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_all.clicked.connect(lambda: self._select(lambda t: True))
+        # additive: "All video" then "All photo" builds up the selection
+        self.btn_video.clicked.connect(
+            lambda: self._select(lambda t: t.kind == "video", additive=True)
+        )
+        self.btn_photo.clicked.connect(
+            lambda: self._select(lambda t: t.kind == "photo", additive=True)
+        )
+        self.btn_none.clicked.connect(lambda: self._select(lambda t: False))
+
         self.btn_get = QPushButton("Transfer selected")
         self.btn_get.setObjectName("primary")
         self.btn_get.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -150,8 +319,8 @@ class MediaTab(QWidget):
             "Delete files from the camera that have a verified copy on this PC."
         )
         self.btn_free.clicked.connect(self.delete_offloaded)
-        bar.addWidget(self.btn_new)
-        bar.addWidget(self.btn_none)
+        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_none):
+            bar.addWidget(b)
         bar.addStretch(1)
         bar.addWidget(self.btn_free)
         bar.addWidget(self.btn_get)
@@ -160,105 +329,56 @@ class MediaTab(QWidget):
         self.grid = QListWidget()
         self.grid.setObjectName("mediaGrid")
         self.grid.setViewMode(QListWidget.ViewMode.IconMode)
-        self.grid.setIconSize(QSize(160, 90))
         self.grid.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.grid.setMovement(QListWidget.Movement.Static)
-        self.grid.setSpacing(6)
+        self.grid.setSpacing(8)
         self.grid.setUniformItemSizes(True)
-        self.grid.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
-        self._just_changed = False
-        self.grid.itemChanged.connect(self._on_item_changed)
-        self.grid.itemClicked.connect(self._on_item_clicked)
+        self.grid.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self.grid.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         v.addWidget(self.grid, 1)
-
-        self.btn_new.clicked.connect(lambda: self._check(only_new=True))
-        self.btn_none.clicked.connect(lambda: self._check(none=True))
 
         self._stack.addWidget(self.empty)
         self._stack.addWidget(content)
         self._stack.setCurrentWidget(self.empty)
         self._update_button()
 
-    def _on_item_changed(self, item: QListWidgetItem) -> None:
-        # checked == selected, visually (amber border via ::item:selected)
-        self._just_changed = True
-        item.setSelected(item.checkState() == Qt.CheckState.Checked)
-        self._update_button()
-
-    def _on_item_clicked(self, item: QListWidgetItem) -> None:
-        # Click anywhere on a tile toggles it — unless this click already
-        # toggled the checkbox itself (itemChanged fired first).
-        if self._just_changed:
-            self._just_changed = False
-            item.setSelected(item.checkState() == Qt.CheckState.Checked)
-            return
-        item.setCheckState(
-            Qt.CheckState.Unchecked
-            if item.checkState() == Qt.CheckState.Checked
-            else Qt.CheckState.Checked
-        )
-
     def set_files(self, rows: list[tuple[str, int, str]]) -> None:
-        """rows: (name, size, note) — note 'queued' means new/transferable."""
-        self.grid.blockSignals(True)
+        """rows: (name, size, note). Default: new files ('queued') checked,
+        files already on disk unchecked, grayed and badge-marked."""
         self.grid.clear()
-        self._items.clear()
-        ph = placeholder_thumb()
+        self._tiles.clear()
         for name, size, note in rows:
-            label = f"{name}\n{human_size(size)}" + ("" if note == "queued" else f" · {note}")
-            item = QListWidgetItem(QIcon(ph), label)
-            item.setData(Qt.ItemDataRole.UserRole, name)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(
-                Qt.CheckState.Checked if note == "queued" else Qt.CheckState.Unchecked
-            )
-            item.setSizeHint(QSize(176, 140))
+            tile = MediaTile(name, size, note)
+            tile.toggled.connect(self._update_button)
+            item = QListWidgetItem()
+            item.setSizeHint(QSize(184, 156))
             self.grid.addItem(item)
-            self._items[name] = item
-        self.grid.blockSignals(False)
-        for name, item in self._items.items():
-            item.setSelected(item.checkState() == Qt.CheckState.Checked)
+            self.grid.setItemWidget(item, tile)
+            self._tiles[name] = tile
+            cached = self._pix_cache.get(name)
+            if cached is not None:
+                tile.set_thumb_pixmap(cached)
         self._stack.setCurrentWidget(self.empty if not rows else self._stack.widget(1))
         self._update_button()
 
     def set_thumb(self, name: str, path: str) -> None:
-        item = self._items.get(name)
-        if not item:
-            return
-        # letterbox onto the exact icon canvas so every tile fits its box
-        size = self.grid.iconSize()
         src = QPixmap(path)
         if src.isNull():
             return
-        canvas = QPixmap(size)
-        canvas.fill(QColor(theme.BG_INSET))
-        scaled = src.scaled(size, Qt.AspectRatioMode.KeepAspectRatio,
-                            Qt.TransformationMode.SmoothTransformation)
-        p = QPainter(canvas)
-        p.drawPixmap((size.width() - scaled.width()) // 2,
-                     (size.height() - scaled.height()) // 2, scaled)
-        p.end()
-        item.setIcon(QIcon(canvas))
+        self._pix_cache[name] = src
+        tile = self._tiles.get(name)
+        if tile:
+            tile.set_thumb_pixmap(src)
 
     def checked_names(self) -> list[str]:
-        return [
-            self.grid.item(i).data(Qt.ItemDataRole.UserRole)
-            for i in range(self.grid.count())
-            if self.grid.item(i).checkState() == Qt.CheckState.Checked
-        ]
+        return [t.name for t in self._tiles.values() if t.checked]
 
-    def _check(self, only_new: bool = False, none: bool = False) -> None:
-        self.grid.blockSignals(True)
-        for i in range(self.grid.count()):
-            item = self.grid.item(i)
-            if none:
-                item.setCheckState(Qt.CheckState.Unchecked)
-            elif only_new:
-                is_new = "·" not in item.text()
-                item.setCheckState(
-                    Qt.CheckState.Checked if is_new else Qt.CheckState.Unchecked
-                )
-        self.grid.blockSignals(False)
+    def _select(self, predicate, additive: bool = False) -> None:
+        for t in self._tiles.values():
+            if predicate(t):
+                t.set_checked(True)
+            elif not additive:
+                t.set_checked(False)
         self._update_button()
 
     def _update_button(self) -> None:
@@ -267,18 +387,27 @@ class MediaTab(QWidget):
         self.btn_get.setEnabled(n > 0)
 
     def set_busy(self, busy: bool) -> None:
-        for b in (self.btn_new, self.btn_none, self.btn_free):
+        for b in (self.btn_all, self.btn_video, self.btn_photo, self.btn_none, self.btn_free):
             b.setEnabled(not busy)
         self.btn_get.setEnabled(not busy and bool(self.checked_names()))
 
 
 class TablePane(QWidget):
-    def __init__(self, headers: list[str], empty_text: str, parent: QWidget | None = None):
+    def __init__(self, headers: list[str], empty_text: str,
+                 widths: list[int] | None = None, parent: QWidget | None = None):
         super().__init__(parent)
         self._stack = QStackedLayout(self)
         self.table = QTableWidget(0, len(headers))
         self.table.setHorizontalHeaderLabels(headers)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        header = self.table.horizontalHeader()
+        # user-adjustable: drag to resize, drag headers to reorder
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setSectionsMovable(True)
+        header.setStretchLastSection(True)
+        if widths:
+            for i, w in enumerate(widths):
+                if i < len(headers):
+                    self.table.setColumnWidth(i, w)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.empty = QLabel(empty_text)
@@ -455,6 +584,7 @@ class MainWindow(QWidget):
         rail_l.addWidget(cams_label)
         self.camera_list = QListWidget()
         rail_l.addWidget(self.camera_list, 1)
+        rail_l.addWidget(Legend())
         root.addWidget(rail)
 
         main = QVBoxLayout()
@@ -473,15 +603,13 @@ class MainWindow(QWidget):
         self.queue = TablePane(
             ["File", "Size", "Progress", "Status"],
             "Nothing queued yet.\nRefresh previews what's new; Transfer pulls it in.",
+            widths=[320, 90, 180, 140],
         )
         self.history = TablePane(
             ["When", "Action", "Files", "Data", "Speed", "Result", "Report"],
             "No sessions recorded yet.",
+            widths=[130, 90, 55, 90, 80, 110, 110],
         )
-        for col in (2, 3, 4, 5, 6):
-            self.history.table.horizontalHeader().setSectionResizeMode(
-                col, QHeaderView.ResizeMode.ResizeToContents
-            )
         self.settings_tab = SettingsTab(settings)
         self.settings_tab.changed.connect(self.settings_saved)
         self.tabs.addTab(self.media, "Media")
@@ -529,7 +657,7 @@ class MainWindow(QWidget):
             t.setItem(r, 0, QTableWidgetItem(name))
             t.setItem(r, 1, QTableWidgetItem(human_size(size)))
             bar = AnimatedBar()
-            bar.setValue(1000 if note in ("already offloaded", "exists on disk") else 0)
+            bar.setValue(1000 if note == "already on disk" else 0)
             t.setCellWidget(r, 2, bar)
             t.setItem(r, 3, QTableWidgetItem(note))
         self.queue.show_rows(bool(rows))

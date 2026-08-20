@@ -36,6 +36,10 @@ ON_PRIMARY = "#191c20"
 STORE_INTERNAL = "#c07830"
 STORE_SD = "#e3ab55"
 
+# media-kind coding (tile borders, legend)
+KIND_VIDEO = "#e0a23e"  # amber
+KIND_PHOTO = "#5fb8a6"  # teal — clearly apart from the warm family
+
 # semantic
 OK = "#3fbd74"
 WARN = "#e0a23e"
@@ -103,12 +107,20 @@ QListWidget::item:selected {{ background: {BG_CARD}; }}
 QListWidget::item:hover:!selected {{ background: #1c1813; }}
 
 QListWidget#mediaGrid {{ background: {BG_PANEL}; padding: 8px; }}
-QListWidget#mediaGrid::item {{
-    padding: 6px; margin: 6px; border-radius: 10px; border: 1px solid transparent;
-    color: {FG_DIM};
+
+QFrame#tile {{
+    background: {BG_CARD}; border-radius: 10px; border: 2px solid #2b2f35;
 }}
-QListWidget#mediaGrid::item:selected {{ background: {BG_CARD}; border-color: {ACCENT}; color: {FG}; }}
-QListWidget#mediaGrid::item:hover:!selected {{ background: {BG_CARD}; }}
+QFrame#tile[kind="video"][checked="true"] {{ border-color: {KIND_VIDEO}; background: #2a2318; }}
+QFrame#tile[kind="photo"][checked="true"] {{ border-color: {KIND_PHOTO}; background: #172623; }}
+QFrame#tile[kind="video"][checked="false"] {{ border-color: #4a3d24; }}
+QFrame#tile[kind="photo"][checked="false"] {{ border-color: #28453f; }}
+QFrame#tile[ondisk="true"] {{ border-color: #2b2f35; background: {BG_PANEL}; }}
+QFrame#tile QLabel#tileName {{ color: {FG_DIM}; font-size: 8.5pt; }}
+QFrame#tile[checked="true"] QLabel#tileName {{ color: {FG}; }}
+
+QWidget#legend {{ background: transparent; }}
+QWidget#legend QLabel {{ color: {FG_DIM}; font-size: 8.5pt; }}
 
 QTableWidget {{
     background: {BG_PANEL}; border: none; color: {FG}; gridline-color: #262019;

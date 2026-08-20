@@ -5,6 +5,27 @@ v1.0.0 is declared by the project owner.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-20
+### Changed — Media grid redesign (user feedback)
+- Tiles are now real checkbox tiles: checkbox top-left is THE selection
+  mechanism, click anywhere on a tile toggles it, no more phantom rubber-band
+  selection or clipped native check indicator.
+- Selection buttons: **All / All video / All photo / None** — the kind buttons
+  are additive (video then photo builds the set). Default: new files checked,
+  files already on disk unchecked.
+- Files already on disk: **grayscale thumbnail + disk badge** (top-right) and
+  a disabled checkbox — they can't be re-selected.
+- **Video and photo tiles have different border colors** (amber / teal).
+- Thumbnails survive grid rebuilds (pixmap cache) — they no longer vanish
+  after a transfer completes; fit is exact.
+- One user-facing label — "already on disk" — replaces the confusing
+  "already offloaded" / "exists on disk" pair (the internal distinction —
+  history record vs matching file found at destination — now lives in the
+  debug log only).
+- **Legend** in the camera rail: border colors, disk badge, in-range dot.
+- Queue/History **columns are user-resizable and reorderable** (drag).
+- Session reports no longer print "Resolutions — unknown".
+
 ## [0.10.0] - 2026-08-20
 ### Changed — UX polish pass (all user-requested)
 - **No more console-window flashes**: every netsh/ipconfig subprocess now

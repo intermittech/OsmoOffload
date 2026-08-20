@@ -400,7 +400,7 @@ class OsmoApp:
         w.card.storage_sd.set_mib(121659, 98410)
         w.set_plan(
             [
-                ("DJI_20260820125927_0001_D.MP4", 252541325, "already offloaded"),
+                ("DJI_20260820125927_0001_D.MP4", 252541325, "already on disk"),
                 ("DJI_20260820143000_0002_D.MP4", 1934567890, "queued"),
                 ("DJI_20260820143120_0003_D.JPG", 8123456, "queued"),
             ]

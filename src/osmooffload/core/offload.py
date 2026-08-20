@@ -102,9 +102,12 @@ class Offloader:
                 size = self.http.head_size(item.storage_idx, url_path) or 0
             item.size = size
             if size and self.db.is_offloaded(self.cfg.camera_folder, rec.media_path, size):
-                item.skipped = "already offloaded"
+                # user-facing label is ONE thing; the reason lives in the log
+                log.debug("%s: skip (transfer history says done)", rec.name)
+                item.skipped = "already on disk"
             elif item.dest.exists() and item.dest.stat().st_size == size:
-                item.skipped = "exists on disk"
+                log.debug("%s: skip (matching file already at destination)", rec.name)
+                item.skipped = "already on disk"
             items.append(item)
         return items
 

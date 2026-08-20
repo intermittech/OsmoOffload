@@ -66,10 +66,12 @@ class SessionReport:
         return sum(f.duration_s or 0 for f in self.videos)
 
     def resolution_breakdown(self) -> dict[str, int]:
+        # files whose resolution couldn't be read are simply left out —
+        # "unknown" is noise, not information
         out: dict[str, int] = {}
         for f in self.videos:
-            key = f.resolution or "unknown"
-            out[key] = out.get(key, 0) + 1
+            if f.resolution:
+                out[f.resolution] = out.get(f.resolution, 0) + 1
         return out
 
     def summary_line(self) -> str:
