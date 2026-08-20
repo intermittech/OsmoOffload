@@ -289,7 +289,9 @@ class SettingsTab(QWidget):
         root.setContentsMargins(20, 18, 20, 18)
         root.setSpacing(12)
 
-        self.base_dir = QLineEdit(settings.get("base_dir", "D:/DJI-Offload"))
+        self.base_dir = QLineEdit(
+            str(settings.get("base_dir", r"D:\DJI-Offload")).replace("/", "\\")
+        )
         browse = QPushButton("Browse…")
         browse.clicked.connect(self._pick_dir)
         h = QHBoxLayout()
@@ -389,11 +391,11 @@ class SettingsTab(QWidget):
     def _pick_dir(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Choose base folder", self.base_dir.text())
         if d:
-            self.base_dir.setText(d)
+            self.base_dir.setText(d.replace("/", "\\"))  # Qt returns / on Windows
 
     def _save(self) -> None:
         self._settings.update(
-            base_dir=self.base_dir.text().strip(),
+            base_dir=self.base_dir.text().strip().replace("/", "\\"),
             template=self.template.text().strip() or "{original}",
             tray_mode=self.tray_mode.isChecked(),
             start_minimized=self.start_minimized.isChecked(),

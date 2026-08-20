@@ -5,6 +5,12 @@ v1.0.0 is declared by the project owner.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-08-20
+### Fixed
+- All user-facing paths now display Windows-style backslashes: defaults,
+  the base-folder fields (Qt's folder picker returns forward slashes — now
+  normalized on pick and on save), stored settings, and mock data.
+
 ## [0.9.0] - 2026-08-20
 ### Verified on hardware
 - Empty-camera handling: a camera that answers the list with zero records now

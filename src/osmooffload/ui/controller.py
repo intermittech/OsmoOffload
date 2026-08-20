@@ -176,7 +176,7 @@ class CameraController(QObject):
         if self.settings.get("kinds_photo", True):
             kinds.append("photo")
         cfg = OffloadConfig(
-            base_dir=Path(self.settings.get("base_dir", "D:/DJI-Offload")),
+            base_dir=Path(self.settings.get("base_dir", r"D:\DJI-Offload")),
             camera_folder=cam_folder,
             template=self.settings.get("template", "{original}"),
             kinds=tuple(kinds),
@@ -356,7 +356,7 @@ class CameraController(QObject):
             if self.settings.get("kinds_photo", True):
                 kinds.append("photo")
             cfg = OffloadConfig(
-                base_dir=Path(self.settings.get("base_dir", "D:/DJI-Offload")),
+                base_dir=Path(self.settings.get("base_dir", r"D:\DJI-Offload")),
                 camera_folder=cam_folder,
                 template=self.settings.get("template", "{original}"),
                 kinds=tuple(kinds),
@@ -554,7 +554,7 @@ class CameraController(QObject):
 
                 http = CameraHttp(conn.CAMERA_IP)
                 cfg = OffloadConfig(
-                    base_dir=Path(self.settings.get("base_dir", "D:/DJI-Offload")),
+                    base_dir=Path(self.settings.get("base_dir", r"D:\DJI-Offload")),
                     camera_folder=cam_folder,
                     template=self.settings.get("template", "{original}"),
                 )

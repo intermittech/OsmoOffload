@@ -40,7 +40,7 @@ class OsmoApp:
 
         self.state = config.load_state()
         self.settings = {
-            "base_dir": self.state.get("base_dir", "D:/DJI-Offload"),
+            "base_dir": self.state.get("base_dir", r"D:\DJI-Offload"),
             "template": self.state.get("template", "{original}"),
             "tray_mode": self.state.get("tray_mode", True),
             "start_minimized": self.state.get("start_minimized", False),
@@ -353,7 +353,7 @@ class OsmoApp:
             [
                 ("2026-08-20 13:28", "DJI_20260820125927_0001_D.MP4",
                  "2026-08-20_125927_P4P_0001.mp4", "252.54 MB", "yes",
-                 "D:/DJI-Offload/OsmoPocket4P-88A6/2026-08-20/video/2026-08-20_125927_P4P_0001.mp4",
+                 r"D:\DJI-Offload\OsmoPocket4P-88A6\2026-08-20\video\2026-08-20_125927_P4P_0001.mp4",
                  None),
             ]
         )

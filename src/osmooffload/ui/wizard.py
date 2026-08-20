@@ -65,7 +65,9 @@ class FirstRunWizard(QDialog):
         intro.setWordWrap(True)
         v1.addWidget(intro)
         row = QHBoxLayout()
-        self.base_dir = QLineEdit(settings.get("base_dir", "D:/DJI-Offload"))
+        self.base_dir = QLineEdit(
+            str(settings.get("base_dir", r"D:\DJI-Offload")).replace("/", "\\")
+        )
         browse = QPushButton("Browse…")
         browse.clicked.connect(self._pick)
         row.addWidget(self.base_dir, 1)
@@ -132,7 +134,7 @@ class FirstRunWizard(QDialog):
     def _pick(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Choose base folder", self.base_dir.text())
         if d:
-            self.base_dir.setText(d)
+            self.base_dir.setText(d.replace("/", "\\"))  # Qt returns / on Windows
 
     def _check_radios(self) -> None:
         self.radio_status.setText("Checking…")
@@ -155,7 +157,8 @@ class FirstRunWizard(QDialog):
         self.btn_next.setText("Finish && pair" if i == self._stack.count() - 1 else "Next")
 
     def _save(self) -> None:
-        self.settings["base_dir"] = self.base_dir.text().strip() or "D:/DJI-Offload"
+        base = self.base_dir.text().strip().replace("/", "\\")
+        self.settings["base_dir"] = base or r"D:\DJI-Offload"
         self.settings["wizard_done"] = True
 
     def _finish_no_pair(self) -> None:
