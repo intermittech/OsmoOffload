@@ -5,6 +5,20 @@ v1.0.0 is declared by the project owner.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-20
+### Verified on hardware
+- Media tab thumbnails fetched live from the camera (`.scr` JPEGs over /v2,
+  cached per camera) on the Osmo Pocket 4 Pro.
+### Added
+- "Ember" design language (built with ui-ux-pro-max 2.13 data): warm dark
+  neutrals, amber brand/interactive color, battery bar with red->amber->green
+  gradient (>=50% greenish to full green), storage bars in two shades of one
+  copper/sand hue with red override >=92% full, subtle eased value animations
+  (interruptible, ~220 ms, skipped when hidden) — snappy by construction.
+- Media tab: thumbnail grid, click-to-toggle selection, Select new / Clear,
+  "Transfer selected (n)" cherry-pick transfers.
+- Progress-signal throttling (<=10 Hz to the UI regardless of chunk rate).
+
 ## [0.5.0] - 2026-08-20
 ### Verified on hardware — GUI-driven transfer, dual-store
 - Full transfer through the GUI: 1.5 GB clip from the **SD card** at 63 MB/s,
