@@ -237,16 +237,28 @@ class MediaTile(QFrame):
         self.thumb.setGeometry(8, 8, self.THUMB.width(), self.THUMB.height())
         self.thumb.setPixmap(placeholder_thumb(self.THUMB))
 
-        self.check = QCheckBox(self)
-        self.check.move(12, 12)
-        self.check.setChecked(note == "queued")
-        self.check.toggled.connect(self._on_toggle)
-
         if self.on_disk:
             badge = QLabel(self)
             badge.setPixmap(disk_badge())
             badge.move(self.width() - 30, 12)
             badge.setToolTip("Already on disk")
+
+        self.label = QLabel(self)
+        self.label.setObjectName("tileName")
+        self.label.setGeometry(8, 102, self.width() - 16, 40)
+        self.label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        metrics = self.label.fontMetrics()
+        elided = metrics.elidedText(name, Qt.TextElideMode.ElideMiddle, self.width() - 20)
+        self.label.setText(f"{elided}\n{human_size(size)}")
+
+        # checkbox last, and set the initial border style explicitly — the
+        # toggled signal only fires on CHANGE, so a tile that starts checked
+        # would otherwise never get its 'checked' style applied
+        self.check = QCheckBox(self)
+        self.check.move(12, 12)
+        self.check.toggled.connect(self._on_toggle)
+        self.check.setChecked(note == "queued")
+        self._sync_style()
 
     @staticmethod
     def _parse_ts(name: str) -> float | None:
@@ -260,15 +272,6 @@ class MediaTile(QFrame):
             return _time.mktime(_time.strptime(m.group(1), "%Y%m%d%H%M%S"))
         except ValueError:
             return None
-
-        self.label = QLabel(self)
-        self.label.setObjectName("tileName")
-        self.label.setGeometry(8, 102, self.width() - 16, 40)
-        self.label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        metrics = self.label.fontMetrics()
-        elided = metrics.elidedText(name, Qt.TextElideMode.ElideMiddle, self.width() - 20)
-        self.label.setText(f"{elided}\n{human_size(size)}")
-        self._sync_style()
 
     # -- behavior ------------------------------------------------------------
 

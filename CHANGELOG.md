@@ -5,6 +5,16 @@ v1.0.0 is declared by the project owner.
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-08-20
+### Fixed
+- Media tile: a checked tile now shows its kind-colored border, not just the
+  ticked checkbox. Two bugs from an earlier interleaved edit: the border was
+  styled only on toggle (never on a tile that started checked), and the
+  filename label plus the initial style call were stranded as dead code inside
+  the timestamp parser — so tiles also lost their filename captions. Checkbox
+  is now built last, connected before its initial state is set, with an
+  explicit initial restyle; labels restored.
+
 ## [0.12.0] - 2026-08-20
 ### Fixed — delete now removes ALL selected files (was: only session-new ones)
 - **Root cause found & fixed**: the manifest decoder only searched for the
