@@ -53,6 +53,32 @@ async def _run(*args: str) -> tuple[int, str]:
     return proc.returncode or 0, out.decode("mbcs", errors="replace")
 
 
+_location_warned = False
+
+
+def _location_gated(text: str) -> bool:
+    """netsh refuses to report WLAN info when Windows Location is off.
+
+    `show networks` and `show interfaces` both fail this way (error 5), but
+    `add profile` / `connect` and ipconfig are unaffected — so a join still
+    works, we just cannot read it back. Detect it and fall back to proving
+    association by the DHCP address instead of blocking the whole transfer.
+    """
+    t = text.lower()
+    return "location" in t and ("permission" in t or "services" in t)
+
+
+def _warn_location_once() -> None:
+    global _location_warned
+    if not _location_warned:
+        _location_warned = True
+        log.warning(
+            "Windows Location Services is off, so netsh cannot report WiFi "
+            "state (Settings > Privacy & security > Location). Falling back "
+            "to confirming the camera join by its DHCP address."
+        )
+
+
 async def _netsh(*args: str) -> tuple[int, str]:
     rc, text = await _run("netsh", *args)
     log.debug("netsh %s -> rc=%s %s", " ".join(args), rc, text.strip()[:400])
@@ -61,6 +87,9 @@ async def _netsh(*args: str) -> tuple[int, str]:
 
 async def interface_status(iface: str | None = None) -> dict[str, str]:
     _, text = await _netsh("wlan", "show", "interfaces")
+    if _location_gated(text):
+        _warn_location_once()
+        return {}
     blocks = re.split(r"\r?\n\r?\n", text)
     for block in blocks:
         fields: dict[str, str] = {}
@@ -90,6 +119,12 @@ async def is_associated(ssid: str, iface: str | None = None) -> bool:
 
 async def network_visible(ssid: str) -> bool:
     _, text = await _netsh("wlan", "show", "networks")
+    if _location_gated(text):
+        # Cannot enumerate at all — report visible so the caller proceeds to
+        # the join, which does not need Location, rather than timing out with
+        # a misleading "the camera's WiFi never appeared".
+        _warn_location_once()
+        return True
     return any(
         line.strip().lower().endswith(ssid.lower()) and line.strip().lower().startswith("ssid")
         for line in text.splitlines()
@@ -116,11 +151,19 @@ async def connect(ssid: str, timeout: float = 25.0, iface: str | None = None) ->
     if iface:
         args.append(f"interface={iface}")
     rc, out = await _netsh(*args)
+    gated = _location_gated(out)
+    if gated:
+        # The connect request itself is honoured; only the status readback is
+        # blocked. Let the caller's wait_for_ip() be the proof of association.
+        _warn_location_once()
+        return {}
     if rc != 0:
         raise RuntimeError(f"netsh connect failed: {out.strip()}")
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
         st = await interface_status(iface)
+        if not st:  # Location turned off mid-flight; fall back to the IP check
+            return {}
         if (
             st.get("state", "").lower().startswith("connected")
             and st.get("ssid", "").lower() == ssid.lower()
@@ -164,7 +207,17 @@ def rejoin_sync(ssid: str, timeout: float = 30.0) -> bool:
                 capture_output=True, timeout=10, check=False,
                 creationflags=CREATE_NO_WINDOW,
             ).stdout.decode("mbcs", "replace")
-            if "connected" in out.lower() and ssid.lower() in out.lower():
+            if _location_gated(out):
+                # Same fallback as connect(): the camera subnet address is
+                # proof enough that we are back on the camera's AP.
+                ip = subprocess.run(
+                    ["ipconfig"], capture_output=True, timeout=10, check=False,
+                    creationflags=CREATE_NO_WINDOW,
+                ).stdout.decode("mbcs", "replace")
+                if re.search(r"IPv4[^:]*:\s*192\.168\.2\.\d+", ip):
+                    log.info("rejoined %s after AP blip (by DHCP address)", ssid)
+                    return True
+            elif "connected" in out.lower() and ssid.lower() in out.lower():
                 log.info("rejoined %s after AP blip", ssid)
                 return True
         except Exception:

@@ -81,8 +81,10 @@ async def establish(
         config.remember_camera(
             state, target.address,
             name=target.name or None, model_id=target.model_id,
-            model_name=target.model_name, ssid=creds.ssid,
-            password=creds.password, wifi_mac=creds.mac,
+            # never overwrite a known body with an advert that failed to
+            # identify itself — remember_camera drops None, not "unknown"
+            model_name=target.model_name if target.model_id is not None else None,
+            ssid=creds.ssid, password=creds.password, wifi_mac=creds.mac,
         )
 
         phase("waking", "Waking the camera's WiFi…")
@@ -101,6 +103,12 @@ async def establish(
                     )
                 except asyncio.TimeoutError:
                     pass
+                except Exception as e:
+                    # ConnectToWiFi is a documented fallback the official app
+                    # never sends, and the camera tears the BLE link a few
+                    # seconds after pairing by design — so a dead link here
+                    # must not abort the session. The AP usually still rises.
+                    log.info("ConnectToWiFi nudge failed (%s) — continuing", e)
                 nudged = True
             await asyncio.sleep(1.5)
         else:

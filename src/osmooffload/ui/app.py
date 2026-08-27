@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 import time
 
@@ -12,6 +13,8 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 from .. import config
 from . import theme
 from .main_window import MainWindow, human_size
+
+log = logging.getLogger("osmo.ui")
 
 
 def make_icon() -> QIcon:
@@ -110,6 +113,7 @@ class OsmoApp:
         w.card.usb_clicked.connect(c.usb_ingest)
         w.settings_tab.check_update.connect(self._check_update_loud)
         w.refresh_requested.connect(c.refresh)
+        w.camera_selected.connect(self._on_camera_selected)
         w.cancel_requested.connect(c.cancel)
         self.act_transfer.triggered.connect(c.transfer)
 
@@ -132,11 +136,10 @@ class OsmoApp:
         saved = self.state.get("cameras", {})
         w.set_cameras(
             [(addr, cam.get("model_name") or cam.get("ssid") or addr, False)
-             for addr, cam in saved.items()]
+             for addr, cam in saved.items()],
+            selected=self._active_address(),
         )
-        if saved:
-            first = next(iter(saved.values()))
-            w.card.title.setText(first.get("model_name") or first.get("ssid") or "Camera")
+        w.card.title.setText(self._active_label())
         self._reload_history()
 
     def _on_state(self, state: str, detail: str) -> None:
@@ -160,8 +163,12 @@ class OsmoApp:
         w.set_cameras(
             [(addr, cam.get("model_name") or cam.get("ssid") or addr,
               state in ("connecting", "connected", "transferring"))
-             for addr, cam in saved.items()]
+             for addr, cam in saved.items()],
+            selected=self._active_address(),
         )
+        # the header must name the camera we are actually talking to, not
+        # whichever one happens to be first in the saved dict
+        w.card.title.setText(self._active_label())
 
     # -- connecting countdown ------------------------------------------------
 
@@ -197,7 +204,8 @@ class OsmoApp:
         saved = self.state.get("cameras", {})
         self.window.set_cameras(
             [(addr, cam.get("model_name") or cam.get("ssid") or addr, present)
-             for addr, cam in saved.items()]
+             for addr, cam in saved.items()],
+            selected=self._active_address(),
         )
 
     def _on_status(self, st: dict) -> None:
@@ -415,6 +423,43 @@ class OsmoApp:
         self.window.show()
         self.window.raise_()
         self.window.activateWindow()
+
+    def _active_address(self) -> str | None:
+        """The camera the app is actually working with."""
+        if self.controller and self.controller.active_address:
+            return self.controller.active_address
+        saved = self.state.get("cameras", {})
+        return self.state.get("active_camera") or next(iter(saved), None)
+
+    def _active_label(self) -> str:
+        addr = self._active_address()
+        saved = {a.lower(): c for a, c in self.state.get("cameras", {}).items()}
+        cam = saved.get((addr or "").lower(), {})
+        return cam.get("model_name") or cam.get("ssid") or addr or "Camera"
+
+    def _on_camera_selected(self, address: str) -> None:
+        """Switch the app to the camera the user clicked in the sidebar."""
+        if not self.controller or address == self.controller.active_address:
+            return
+        self.controller.active_address = address
+        self.state["active_camera"] = address
+        config.save_state(self.state)
+
+        cam = {a.lower(): c for a, c in self.state.get("cameras", {}).items()}.get(
+            address.lower(), {}
+        )
+        label = cam.get("model_name") or cam.get("ssid") or address
+        # immediate feedback: without this the click looks like it did nothing
+        self.window.card.title.setText(label)
+        log.info("active camera set to %s (%s)", address, label)
+
+        if self.controller.busy:
+            self.window.status_line.setText(
+                f"{label} selected — finishing the current job first"
+            )
+        else:
+            self.window.status_line.setText(f"Switching to {label}…")
+            self.controller.refresh()
 
     def _on_settings_saved(self, settings: dict) -> None:
         self.settings.update(settings)

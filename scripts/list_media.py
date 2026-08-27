@@ -6,6 +6,7 @@ BLE session (wake + keepalive) -> WiFi join -> UDP datalink -> playback ->
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 import sys
@@ -18,7 +19,7 @@ from osmooffload import config
 from osmooffload.ble import scanner
 from osmooffload.ble.link import BleLink
 from osmooffload.ble.pairing import pair_and_get_credentials
-from osmooffload.camera.session import CameraDatalink
+from osmooffload.camera.session import CameraDatalink, datalink_configs
 from osmooffload.duml import commands as cmd
 from osmooffload.net import wifi
 
@@ -40,13 +41,15 @@ def setup_logging() -> Path:
     return logfile
 
 
-def run_datalink(identifier: str):
+def run_datalink(identifier: str, model_id: int | None = None):
     """Blocking; runs in a thread. Returns (records, status, raw_blob_len)."""
     log = logging.getLogger("osmo.list")
-    # port configs per docs: 9004+poke is the family default; 10004/no-poke the alternate
-    port_configs = [(9004, True), (10004, False), (9004, True)]
+    # 9004+poke is the family default; the Xtra Edge Pro / Action 5 Pro is
+    # udp/10004-only, so order the candidates by the saved model id.
+    port_configs = datalink_configs(model_id) + datalink_configs(model_id)[:1]
     for attempt, (port, poke) in enumerate(port_configs, start=1):
-        dl = CameraDatalink(CAMERA_IP, port=port, tcp_poke=poke, identifier=identifier)
+        dl = CameraDatalink(CAMERA_IP, port=port, tcp_poke=poke,
+                            identifier=identifier, model_id=model_id)
         try:
             if not dl.open():
                 if attempt < len(port_configs):
@@ -67,6 +70,10 @@ def run_datalink(identifier: str):
 
 
 async def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--address", help="BLE address of the saved camera to use")
+    args = ap.parse_args()
+
     logfile = setup_logging()
     log = logging.getLogger("osmo.list")
     log.info("log file: %s", logfile)
@@ -76,7 +83,17 @@ async def main() -> int:
     if not cams:
         log.error("no saved camera — run probe.py first")
         return 2
-    address, cam = next(iter(cams.items()))
+    if args.address:
+        match = {a: c for a, c in cams.items() if a.lower() == args.address.lower()}
+        if not match:
+            log.error("address %s is not a saved camera — run probe.py for it first", args.address)
+            return 2
+        address, cam = next(iter(match.items()))
+    else:
+        address, cam = next(iter(cams.items()))
+    model_id = cam.get("model_id")
+    log.info("using saved camera %s (%s, model_id=%s)",
+             address, cam.get("model_name", "?"), model_id)
     identifier = config.get_identifier(state)
 
     target = None
@@ -117,7 +134,8 @@ async def main() -> int:
         await wifi.wait_for_ip("192.168.2.", timeout=20.0)
         log.info("WiFi joined — starting datalink")
 
-        records, status, blob_len = await asyncio.to_thread(run_datalink, identifier)
+        records, status, blob_len = await asyncio.to_thread(
+            run_datalink, identifier, model_id)
 
         log.info("=== STATUS ===")
         log.info(
