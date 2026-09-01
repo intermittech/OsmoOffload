@@ -5,6 +5,26 @@ v1.0.0 is declared by the project owner.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-01
+Upstream contributions from **[@KonradIT](https://github.com/KonradIT)** (the
+osmosis protocol author) via PR #1 — extending the app to his own hardware.
+### Added / Fixed
+- **Osmo Nano and Xtra Edge Pro support.** Model-aware datalink port
+  selection (the Xtra answers on udp/10004 only and refuses the tcp/7001
+  poke; everything else takes udp/9004 first). Nano single-store storage:
+  its 22-byte `0x02/0xdc` frame carries the built-in store, not a card, and
+  can read 0/0 — so the active-store numbers from `0x02/0x80` are used.
+- **BLE model resolution from the local name** when an advert/scan-response
+  packet carries no manufacturer bytes, longest-prefix-first so
+  `OsmoPocket4P` isn't misread as a Pocket 4; a reconnect no longer downgrades
+  a known camera to "unknown".
+- **Windows Location-Services fallback**: when Location is off, netsh can't
+  report WiFi state — the join still works, so association is now confirmed by
+  the DHCP address instead of failing with a misleading "AP never appeared".
+- Manifest still-handle decode extended to the Pocket 3 marker layout, with a
+  guard so the Xtra's record order doesn't invent favourite flags.
+- `PySide6` pinned as a real dependency in `pyproject.toml`.
+
 ## [1.0.0] - 2026-08-20
 First public release, and the end of a one-day 0.x sprint: protocol core
 (BLE pairing/wake, WiFi handoff, UDP datalink, HTTP downloads), the full GUI
