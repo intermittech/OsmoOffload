@@ -40,6 +40,40 @@ MODEL_NAMES = {
 
 NEW_ADVERT_PRODUCT_TYPES = {218: ("Osmo Pocket 4 Pro", 0x0022)}
 
+# BLE local-name prefix -> (model id, display name). Used when a packet carries
+# no manufacturer data — adverts and scan responses arrive separately, so the
+# first packet seen for a device often has the name but not the model bytes.
+# Longest prefix first: "OsmoPocket4P" must beat "OsmoPocket4".
+NAME_MODELS: tuple[tuple[str, int, str], ...] = (
+    ("OsmoPocket4P", 0x0022, "Osmo Pocket 4 Pro"),
+    ("OsmoPocket4", 0x0021, "Osmo Pocket 4"),
+    ("OsmoPocket3", 0x0020, "Osmo Pocket 3"),
+    ("OsmoNano", 0x0019, "Osmo Nano"),
+    ("Osmo360", 0x0017, "Osmo 360"),
+    # The Xtra Edge Pro is a rebadged Action 5 Pro on DJI firmware and shares
+    # its model byte, but its name matches no MODEL_NAMES entry.
+    ("XtraEdgePro", 0x0015, "Xtra Edge Pro"),
+    ("OsmoAction6", 0x0018, "Osmo Action 6"),
+)
+
+
+def resolve_model(mfr_data: dict[int, bytes], name: str) -> tuple[int | None, str]:
+    """Model from manufacturer data, falling back to the BLE local name."""
+    model_id, model_name = _parse_model(mfr_data)
+    if model_id is not None:
+        return model_id, model_name
+    if name:
+        # NAME_MODELS first: it is ordered longest-prefix-first, while
+        # MODEL_NAMES is a plain dict, so matching that first resolves
+        # "OsmoPocket4P-…" as a Pocket 4 rather than a Pocket 4 Pro.
+        for prefix, mid, disp in NAME_MODELS:
+            if name.startswith(prefix):
+                return mid, disp
+        for mid, mname in MODEL_NAMES.items():
+            if name.replace(" ", "").lower().startswith(mname.replace(" ", "").lower()):
+                return mid, mname
+    return None, "unknown"
+
 
 @dataclass
 class FoundCamera:
@@ -80,15 +114,7 @@ async def scan(timeout: float = 8.0) -> list[FoundCamera]:
         has_fff0 = any("fff0" in (u or "") for u in adv.service_uuids)
         if not (is_dji_mfr or is_name or has_fff0):
             continue
-        model_id, model_name = _parse_model(adv.manufacturer_data)
-        if model_id is None and name:
-            for mid, mname in MODEL_NAMES.items():
-                if name.replace(" ", "").lower().startswith(mname.replace(" ", "").lower()):
-                    model_id, model_name = mid, mname
-                    break
-            else:
-                if name.startswith("OsmoPocket4P"):
-                    model_id, model_name = 0x0022, "Osmo Pocket 4 Pro"
+        model_id, model_name = resolve_model(adv.manufacturer_data, name)
         mfr_hex = ";".join(f"{cid:04x}:{p.hex()}" for cid, p in adv.manufacturer_data.items())
         found.append(
             FoundCamera(
@@ -118,17 +144,22 @@ async def find_fast(address: str, timeout: float = 12.0) -> FoundCamera | None:
     def on_detect(device, adv) -> None:
         if (device.address or "").lower() != want:
             return
-        model_id, model_name = _parse_model(adv.manufacturer_data)
         name = adv.local_name or device.name or ""
-        if model_id is None and name.startswith("OsmoPocket4P"):
-            model_id, model_name = 0x0022, "Osmo Pocket 4 Pro"
+        model_id, model_name = resolve_model(adv.manufacturer_data, name)
+        # Advert and scan response arrive as separate packets; the first one
+        # often carries no model bytes. Keep an unresolved hit as a fallback
+        # but hold out for a packet that identifies the body, so a reconnect
+        # never downgrades a known camera to "unknown" in the saved state.
+        if model_id is None and hit.get("c") is not None:
+            return
         hit["c"] = FoundCamera(
             address=device.address, name=name, rssi=adv.rssi,
             model_id=model_id, model_name=model_name,
             mfr_hex=";".join(f"{c:04x}:{p.hex()}" for c, p in adv.manufacturer_data.items()),
             device=device,
         )
-        found_evt.set()
+        if model_id is not None:
+            found_evt.set()
 
     scanner = BleakScanner(detection_callback=on_detect)
     await scanner.start()

@@ -629,6 +629,7 @@ class MainWindow(QWidget):
     refresh_requested = Signal()
     cancel_requested = Signal()
     settings_saved = Signal(dict)
+    camera_selected = Signal(str)
 
     def __init__(self, settings: dict, parent: QWidget | None = None):
         super().__init__(parent)
@@ -651,6 +652,9 @@ class MainWindow(QWidget):
         cams_label.setObjectName("dim")
         rail_l.addWidget(cams_label)
         self.camera_list = QListWidget()
+        self.camera_list.itemClicked.connect(
+            lambda it: self.camera_selected.emit(it.data(Qt.ItemDataRole.UserRole))
+        )
         rail_l.addWidget(self.camera_list, 1)
         rail_l.addWidget(Legend())
         root.addWidget(rail)
@@ -709,14 +713,32 @@ class MainWindow(QWidget):
 
     # -- controller-facing helpers ------------------------------------------
 
-    def set_cameras(self, cameras: list[tuple[str, str, bool]]) -> None:
+    def selected_camera(self) -> str | None:
+        item = self.camera_list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def set_cameras(self, cameras: list[tuple[str, str, bool]],
+                    selected: str | None = None) -> None:
+        """Rebuild the sidebar, keeping whatever the user picked selected.
+
+        This is called again on every in-range poll, so resetting to row 0
+        would silently drag the target back to the first saved camera."""
+        prev = selected or self.selected_camera()
+        self.camera_list.blockSignals(True)
         self.camera_list.clear()
         for cam_id, label, in_range in cameras:
             item = QListWidgetItem(("● " if in_range else "○ ") + label)
             item.setData(Qt.ItemDataRole.UserRole, cam_id)
             self.camera_list.addItem(item)
+        row = 0
+        for i in range(self.camera_list.count()):
+            other = self.camera_list.item(i).data(Qt.ItemDataRole.UserRole)
+            if prev and other and other.lower() == prev.lower():
+                row = i
+                break
         if cameras:
-            self.camera_list.setCurrentRow(0)
+            self.camera_list.setCurrentRow(row)
+        self.camera_list.blockSignals(False)
 
     def set_plan(self, rows: list[tuple[str, int, str]]) -> None:
         self._plan_rows = list(rows)

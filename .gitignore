@@ -9,3 +9,5 @@ reference/
 config/
 logs/
 *.log
+
+*.egg-info/

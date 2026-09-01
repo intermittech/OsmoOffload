@@ -65,6 +65,27 @@ def subscription_payload(name: str, sub_id: int) -> bytes:
     )
 
 
+# Datalink transport per body. Every Osmo takes the DJI-standard udp/9004
+# after a tcp/7001 poke *except* the Xtra Edge Pro / Action 5 Pro (model 0x15),
+# which answers on udp/10004 only: it refuses tcp/7001 and never opens 9004.
+# Ordered most-likely-first; callers fall through to the next on a failed open.
+UDP_10004_ONLY_MODELS = {0x15}
+
+
+# Bodies whose single store is the built-in one. The rule is which physical
+# store the body has, not the list ordinal: a Nano's only store is internal,
+# while a Pocket 3's only store is a microSD. These report the 22 B 0x02/0xdc
+# frame with stores=1, which carries one block and no internal block at all.
+SINGLE_STORE_INTERNAL_MODELS = {0x19}
+
+
+def datalink_configs(model_id: int | None) -> list[tuple[int, bool]]:
+    """Ordered (port, tcp_poke) candidates for a body, most likely first."""
+    if model_id in UDP_10004_ONLY_MODELS:
+        return [(10004, False), (9004, True)]
+    return [(9004, True), (10004, False)]
+
+
 @dataclass
 class CameraStatus:
     battery_pct: int | None = None
@@ -90,11 +111,13 @@ class CameraDatalink:
         tcp_poke: bool = True,
         identifier: str = "osmooffload",
         bind_local: bool = True,
+        model_id: int | None = None,
     ):
         self.ip = ip
         self.port = port
         self.tcp_poke = tcp_poke
         self.identifier = identifier
+        self.model_id = model_id
         # Symmetric port (9004->9004) like DJI Fly does with drones. On Windows
         # this also keeps the firewall's UDP state happy: replies come back to
         # the same flow instead of an unsolicited ephemeral port.
@@ -239,6 +262,18 @@ class CameraDatalink:
                     if len(pl) >= 32:
                         st.internal_total_mib = struct.unpack_from("<I", pl, 24)[0]
                         st.internal_free_mib = struct.unpack_from("<I", pl, 28)[0]
+                    elif self.model_id in SINGLE_STORE_INTERNAL_MODELS:
+                        # 22 B frame: one block, and on these bodies it is the
+                        # built-in store, not a card. The block itself can read
+                        # 0/0 on a Nano, so prefer the active-store numbers from
+                        # 0x02/0x80, which are populated.
+                        st.internal_total_mib = st.active_total_mib or st.sd_total_mib
+                        st.internal_free_mib = (
+                            st.active_free_mib
+                            if st.active_free_mib is not None
+                            else st.sd_free_mib
+                        )
+                        st.sd_total_mib = st.sd_free_mib = None
                     st.last_update = time.monotonic()
                 elif cmd_set == 0x0D and cmd_id == 0x02 and len(pl) >= 21:
                     st.voltage_mv = struct.unpack_from("<H", pl, 1)[0]

@@ -132,9 +132,13 @@ def decode(buf: bytes) -> list[MediaRecord]:
                 break
             j += 1
 
-        # thumb path (sub=2) within the window
+        # thumb path (sub=2) — search from the end of THIS record's media
+        # path, not from `lo`. Both documented field orders put the thumb TLV
+        # directly after the media path (`head enum filename media thumb` on
+        # Action 6 / Nano, `head media thumb enum filename` on the CAM_ family),
+        # so a scan starting at `lo` returns the previous record's thumb.
         thumb = None
-        t = lo
+        t = end
         while t < hi:
             tf = _read_path(buf, t, sub=2, prefix=b"MISC/")
             if tf:
@@ -151,17 +155,31 @@ def decode(buf: bytes) -> list[MediaRecord]:
         handle = size = 0
         star = False
         p = lo
-        while p < hi - 1:
+        while p < pos - 1:
             if buf[p] == 0x19 and buf[p + 1] == 0x06 and p >= 1 and buf[p - 1] in (0xFE, 0xFF):
                 if p - 10 >= 0:
                     handle = struct.unpack_from("<I", buf, p - 10)[0]
                 if p - 14 >= 0:
                     size = struct.unpack_from("<I", buf, p - 14)[0]
-                star_off = p + 9
-                if star_off < len(buf) and buf[star_off] in (0, 1):
-                    star = buf[star_off] == 1
+                # starTag: u8 at `[fe|ff] 19 06` + 9 — the `fe|ff` sits at
+                # p - 1, so the flag is p + 8. Only bodies that put the enum
+                # block after the marker carry it there: in the CAM_ order the
+                # media path TLV starts at p + 7, making p + 8 its length byte,
+                # and reading that as a flag invents favourites.
+                if p + 7 < len(buf) and buf[p + 7] != 0x1A:
+                    star_off = p + 8
+                    if star_off < len(buf) and buf[star_off] in (0, 1):
+                        star = buf[star_off] == 1
                 break
             p += 1
+        else:
+            # Bodies whose stills carry no `[fe|ff]`-prefixed marker (Pocket 3)
+            # still write the `19 06` pair at a fixed spot: 13 B before the
+            # media path's ascii, i.e. 7 B before its TLV. Same -10/-14 rule.
+            q = pos - 7
+            if q >= 14 and buf[q] == 0x19 and buf[q + 1] == 0x06:
+                handle = struct.unpack_from("<I", buf, q - 10)[0]
+                size = struct.unpack_from("<I", buf, q - 14)[0]
 
         name = f"{base}.{ext}" if ext else base
         files.append(

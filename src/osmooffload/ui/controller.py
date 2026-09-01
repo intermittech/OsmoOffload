@@ -22,7 +22,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 from .. import config
-from ..camera.session import CameraDatalink
+from ..camera.session import CameraDatalink, datalink_configs
 from ..core import connect as conn
 from ..core.offload import OffloadConfig, Offloader, SessionProgress
 from ..history import HistoryDB
@@ -64,6 +64,10 @@ class CameraController(QObject):
     def __init__(self, settings: dict, parent: QObject | None = None):
         super().__init__(parent)
         self.settings = settings
+        # Which saved camera the user picked in the sidebar. Restored from
+        # state so the startup auto-connect targets the same body as last time
+        # instead of whichever camera happens to be first in the saved dict.
+        self.active_address: str | None = config.load_state().get("active_camera")
         self._busy = False
         self._cancel = False
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -207,6 +211,22 @@ class CameraController(QObject):
         (link, creds, target, warm_dl). Emits connect_started with the ETA."""
         self._almost_sent = False
         warm = self._warm
+        if warm and self.active_address:
+            held = (getattr(warm.get("target"), "address", "") or "").lower()
+            if held and held != self.active_address.lower():
+                log.info("held connection is %s but %s is selected — dropping it",
+                         held, self.active_address)
+                self._warm = None
+                if warm.get("dl"):
+                    try:
+                        await asyncio.to_thread(warm["dl"].close)
+                    except Exception:
+                        pass
+                try:
+                    await conn.teardown(warm["link"])
+                except Exception:
+                    pass
+                warm = None
         if warm and warm["link"].is_connected:
             self._warm = None  # in use; re-held on success
             self.connect_started.emit(WARM_ESTIMATE_S)
@@ -259,7 +279,7 @@ class CameraController(QObject):
         return link, creds, target, None
 
     async def _establish(self, state: dict):
-        address = next(iter(state.get("cameras", {})), None)
+        address = self.active_address or next(iter(state.get("cameras", {})), None)
         for attempt in (1, 2):
             try:
                 return await conn.establish(
@@ -673,17 +693,49 @@ class CameraController(QObject):
         finally:
             _keep_awake(False)
 
+    def _active_cam(self) -> dict:
+        cams = config.load_state().get("cameras", {})
+        if self.active_address:
+            for addr, cam in cams.items():
+                if addr.lower() == self.active_address.lower():
+                    return cam
+        return next(iter(cams.values()), {})
+
+    def _model_id(self) -> int | None:
+        return self._active_cam().get("model_id")
+
+    def _datalink_configs(self) -> list[tuple[int, bool]]:
+        """(port, tcp_poke) candidates for the saved camera, most likely first.
+
+        Keyed off the BLE model id, and the last transport that actually worked
+        is remembered so a body that needs the alternate pays the probe once."""
+        cam = self._active_cam()
+        configs = datalink_configs(cam.get("model_id"))
+        last = cam.get("datalink_port")
+        if last is not None:
+            configs.sort(key=lambda c: c[0] != last)
+        return configs
+
+    def _remember_datalink(self, port: int, poke: bool) -> None:
+        state = config.load_state()
+        address = self.active_address or next(iter(state.get("cameras", {})), None)
+        if address:
+            config.remember_camera(state, address, datalink_port=port,
+                                   datalink_poke=poke)
+
     def _fetch_records_keep(self, identifier: str):
         """Open a datalink, register, list. On success the session is KEPT
         OPEN and returned so it can be held warm. Returns
-        (records, status, answered, dl|None). The saved camera is a known
-        9004+poke body, so the 10004 probe is skipped entirely."""
+        (records, status, answered, dl|None). Transport is chosen per body —
+        an Xtra Edge Pro / Action 5 Pro answers on udp/10004 only, so a
+        9004-only ladder would never reach it."""
         from ..camera import manifest as mf
 
         last_status = None
-        for attempt in (1, 2, 3):
-            dl = CameraDatalink(conn.CAMERA_IP, port=9004, tcp_poke=True,
-                                identifier=identifier)
+        candidates = [c for c in self._datalink_configs() for _ in (1, 2, 3)]
+        for attempt, (port, poke) in enumerate(candidates, start=1):
+            dl = CameraDatalink(conn.CAMERA_IP, port=port, tcp_poke=poke,
+                                identifier=identifier, model_id=self._model_id())
             ok = False
             try:
                 if not dl.open():
@@ -694,6 +746,7 @@ class CameraController(QObject):
                 last_status = dl.status
                 if records or mf.list_answered(raw):
                     ok = True
+                    self._remember_datalink(port, poke)
                     return records, dl.status, True, dl
                 log.warning("list unanswered on attempt %d", attempt)
             finally:
@@ -762,9 +815,9 @@ class CameraController(QObject):
         return out
 
     def _fresh_delete_dl(self, identifier: str):
-        for _ in (1, 2):
-            dl = CameraDatalink(conn.CAMERA_IP, port=9004, tcp_poke=True,
-                                identifier=identifier)
+        for port, poke in [c for c in self._datalink_configs() for _ in (1, 2)]:
+            dl = CameraDatalink(conn.CAMERA_IP, port=port, tcp_poke=poke,
+                                identifier=identifier, model_id=self._model_id())
             if dl.open():
                 dl.register()
                 dl.enter_playback()
