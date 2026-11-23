@@ -134,6 +134,8 @@ async def rejoin_ap(link: BleLink, creds: WifiCredentials) -> bool:
             return True
         except TimeoutError:
             pass
+    if not link.is_connected:
+        return False
     loop = asyncio.get_running_loop()
     t0 = loop.time()
     nudged = False

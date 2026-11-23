@@ -26,6 +26,7 @@ from ..camera.session import CameraDatalink, datalink_configs
 from ..core import connect as conn
 from ..core.offload import OffloadConfig, Offloader, SessionProgress
 from ..history import HistoryDB
+from ..net import wifi
 from ..net.downloader import CameraHttp
 from ..net.wifi import rejoin_sync as wifi_rejoin
 
@@ -227,7 +228,8 @@ class CameraController(QObject):
                 except Exception:
                     pass
                 warm = None
-        if warm and warm["link"].is_connected:
+        # The camera drops BLE once its AP is up; the WiFi session is what matters.
+        if warm and (warm["link"].is_connected or await wifi.is_associated(warm["creds"].ssid)):
             self._warm = None  # in use; re-held on success
             self.connect_started.emit(WARM_ESTIMATE_S)
             self.state_changed.emit("connecting", "Reusing the held connection…")
